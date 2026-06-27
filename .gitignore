@@ -1,0 +1,29 @@
+# --- Data: NEVER commit ARMD (patient data, large) ---
+data/
+*.csv
+*.parquet
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.ipynb_checkpoints/
+
+# --- Models / outputs ---
+*.pt
+*.pth
+checkpoints/
+runs/
+outputs/
+
+# --- Flower / Ray ---
+.flwr/
+ray_results/
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,30 @@
+# Python 3.11 recommended.
+# (3.10 is being dropped by Flower; PyG supports 3.10–3.13.)
+#
+# STEP 1 — install PyTorch FIRST, matched to your platform:
+#   Local CPU:  pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   Colab:      torch is preinstalled with CUDA — do NOT reinstall it there.
+# STEP 2 — then:  pip install -r requirements.txt
+
+# --- Data ---
+numpy
+pandas
+pyarrow
+scikit-learn
+scipy
+
+# --- Graph + GNN (PyG 2.7+ needs no compiled extensions for heterogeneous graphs) ---
+torch-geometric
+networkx
+
+# --- Federated learning ---
+flwr[simulation]
+
+# --- Visualization ---
+matplotlib
+seaborn
+pyvis
+
+# --- Local notebooks (EDA + final plots only) ---
+jupyterlab
+ipykernel
