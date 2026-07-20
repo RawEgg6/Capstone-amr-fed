@@ -13,8 +13,9 @@ ever leave a client.
 ## Locked decisions — do not silently change (see `src/amr_fed/config.py`)
 - **Dataset:** ARMD (Stanford, single institution). 10 of 16 CSVs used. Data found via `config.DATA_DIR`.
 - **Graph:** heterogeneous, 5 node types — patient, organism, antibiotic, comorbidity, procedure.
-- **Target:** edge classification of S/I/R on the `(organism, tested, antibiotic)` edge.
-- **"Hospitals":** simulated by **ward** (ICU/ER/IP/OP) since ARMD is one site.
+- **Edges (6):** core = `(organism,tested,antibiotic)` [label], `(patient,grew,organism)`, `(organism,known_resistant,antibiotic)`; enrichment = `(patient,underwent,procedure)`, `(patient,has,comorbidity)`, `(patient,prior_exposure,antibiotic)`.
+- **Target:** **binary** edge classification — **Resistant+Intermediate vs Susceptible** — on the `(organism, tested, antibiotic)` edge. Class-weighted; report macro-F1. (Keep only `was_positive=1` + S/I/R rows → 1.60M.)
+- **"Hospitals":** simulated by a **Dirichlet(α) ward-mixture** (each hospital = a different blend of all wards; α-swept). Plain **ward** + **ADI** as baseline partitions.
 - **GNN:** heterogeneous GraphSAGE ("AMR-SAGE"), **identical architecture across all clients**.
 - **Federation:** Flower (`flwr[simulation]`); a custom topology-aware `Strategy` subclass aggregates.
 
@@ -26,7 +27,7 @@ ever leave a client.
 ## Build order
 0. Env + schema (this scaffold)
 1. Single-ward pipeline: data -> KG -> local GNN with strong macro-F1
-2. Ward partitioning (IID + non-IID)
+2. Dirichlet ward-mixture partitioning (α-sweep) + ward/ADI baselines
 3. FedAvg baseline (must be >= local-only before adding novelty)
 4. Topology profiling module
 5. Topology-aware aggregation (the novel contribution)
@@ -40,7 +41,7 @@ src/amr_fed/
   config.py        # locked constants (done)
   data_loader.py   # load + join the 10 tables on the 4 keys
   graph_build.py   # build the 5-node heterogeneous KG (PyG HeteroData)
-  partition.py     # ward-based client partitioning
+  partition.py     # Dirichlet ward-mixture client partitioning (+ ward/ADI baselines)
   model.py         # AMR-SAGE heterogeneous GNN
   train_local.py   # single-client training + eval
   topology.py      # Phase 4: per-client topology fingerprint
