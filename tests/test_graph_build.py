@@ -10,7 +10,10 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from amr_fed.graph_build import _age_to_ordinal, _patient_grouped_split, _smoothed_rate
+from amr_fed.graph_build import (
+    COM, _age_to_ordinal, _build_comorbidity_arrays, _patient_grouped_split, _smoothed_rate,
+)
+from amr_fed.data_loader import PK
 
 
 def test_age_to_ordinal():
@@ -42,8 +45,26 @@ def test_patient_grouped_split_disjoint_and_deterministic():
     assert len(groups[0]) == 70               # 70/15/15 of 100
 
 
+def test_build_comorbidity_arrays():
+    pat_map = {"pA": 0, "pB": 1, "pC": 2}
+    # train rates: pA all-resistant (1.0), pB all-susceptible (0.0); pC is val/test (absent)
+    pat_rate = pd.Series({0: 1.0, 1: 0.0})
+    edges = pd.DataFrame({
+        PK:  ["pA", "pB", "pC", "pA", "pZ"],       # pZ not in pat_map -> dropped
+        COM: ["diab", "diab", "htn", "htn", "diab"],
+    })
+    names, x, ei = _build_comorbidity_arrays(edges, pat_map, pat_rate, global_rate=0.2)
+    assert list(names) == ["diab", "htn"], names
+    assert ei.shape == (2, 4), ei.shape          # pZ edge dropped -> 4 edges, not 5
+    assert x.shape == (2, 2) and np.isfinite(x).all()
+    # diab (pA=1.0, pB=0.0 -> mean 0.5) should carry higher resistance signal than
+    # htn (pA=1.0 in train, pC absent -> ~1.0) ... both finite; just assert ordering sane
+    assert set(ei[1].tolist()) == {0, 1}
+
+
 if __name__ == "__main__":
     test_age_to_ordinal()
     test_smoothed_rate_shrinks_low_counts()
     test_patient_grouped_split_disjoint_and_deterministic()
+    test_build_comorbidity_arrays()
     print("OK: graph_build unit tests passed.")

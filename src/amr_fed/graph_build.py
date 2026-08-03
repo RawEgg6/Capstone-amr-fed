@@ -25,6 +25,8 @@ import pandas as pd
 from . import config
 from .data_loader import ABX, ADI, CK, ORG, PK, load_cohort_frame
 
+COM = config.COLUMNS["comorbidity"]  # comorbidity_component
+
 # age bins are ordinal; rank them by their leading integer ("above 90" -> 90)
 def _age_to_ordinal(age: pd.Series) -> pd.Series:
     lead = age.astype(str).str.extract(r"(\d+)", expand=False)
@@ -57,6 +59,58 @@ def _patient_grouped_split(patients: np.ndarray, seed: int, fracs=(0.70, 0.15, 0
     return code
 
 
+def _stream_comorbidity_edges(patient_ids: set, chunksize: int = 2_000_000,
+                              cache_path: str | None = None) -> pd.DataFrame:
+    """Distinct (patient, comorbidity_component) pairs restricted to cohort patients.
+
+    The comorbidity table is ~18 GB / 206M rows, so it is streamed in chunks and each
+    chunk filtered to the cohort before dedup (bounds memory to the ~2.1M distinct
+    edges). If cache_path exists it is loaded instead; if set, the result is cached.
+    """
+    if cache_path and Path(cache_path).exists():
+        return pd.read_parquet(cache_path)
+    fp = Path(config.DATA_DIR) / config.ARMD_TABLES["comorbidity"]
+    parts = []
+    for chunk in pd.read_csv(fp, usecols=[PK, COM], chunksize=chunksize, low_memory=False):
+        chunk = chunk[chunk[PK].isin(patient_ids)].dropna()
+        if len(chunk):
+            parts.append(chunk.drop_duplicates())
+    edges = (pd.concat(parts, ignore_index=True).drop_duplicates()
+             if parts else pd.DataFrame(columns=[PK, COM]))
+    if cache_path:
+        edges.to_parquet(cache_path, index=False)
+    return edges
+
+
+def _build_comorbidity_arrays(edge_df: pd.DataFrame, pat_map: dict, pat_rate: pd.Series,
+                              global_rate: float):
+    """(comorbidity node names, float features, (patient,has,comorbidity) edge_index).
+
+    Features (real signals, no identity one-hot): log prevalence (# distinct patients)
+    and a leakage-safe resistance association — mean of connected TRAIN patients'
+    resistance rates, shrunk toward the global rate. `pat_rate` is indexed by patient
+    node id and defined for TRAIN patients only.
+    """
+    edge_df = edge_df[edge_df[PK].isin(pat_map)]
+    names = np.sort(edge_df[COM].unique())
+    com_map = {v: i for i, v in enumerate(names)}
+    n = len(names)
+    e_p = edge_df[PK].map(pat_map).to_numpy()
+    e_c = edge_df[COM].map(com_map).to_numpy()
+
+    ecom = pd.DataFrame({"p": e_p, "c": e_c})
+    ecom["rate"] = ecom["p"].map(pat_rate)                 # NaN for val/test patients
+    grp = ecom.dropna(subset=["rate"]).groupby("c")["rate"]
+    n_tot = grp.count().reindex(range(n), fill_value=0)
+    n_pos = grp.sum().reindex(range(n), fill_value=0.0)
+    com_rate = _smoothed_rate(n_pos, n_tot, global_rate).to_numpy()
+    com_prev = ecom.groupby("c").size().reindex(range(n), fill_value=0).to_numpy()
+
+    x = _zscore(np.column_stack([np.log1p(com_prev), com_rate])).astype(np.float32)
+    edge_index = np.vstack([e_p, e_c]).astype(np.int64)
+    return names, x, edge_index
+
+
 def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
     """(organism, known_resistant, antibiotic) edges from the resistance prior table,
     filtered to organisms/antibiotics that exist as nodes. Returns [2, E] int array."""
@@ -70,11 +124,16 @@ def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
     return np.vstack([src, dst]).astype(np.int64)
 
 
-def build_arrays(df: pd.DataFrame, seed: int = config.SEED) -> dict:
+def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
+                 comorbidity_cache: str | None = None) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
     supervision triples/labels, and the patient-grouped split codes.
+
+    `enrich` adds enrichment node/edge types on top of the core 3, e.g.
+    enrich=("comorbidity",) adds the comorbidity node + (patient,has,comorbidity)
+    edge. `comorbidity_cache` is a parquet path for the streamed edge list.
     """
     # --- node index maps (string/id -> contiguous int) ---
     organisms = np.sort(df[ORG].unique())
@@ -94,6 +153,8 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED) -> dict:
     split = df[PK].map(code).to_numpy()          # per-triple split code {0,1,2}
     is_train = split == 0
     global_rate = float(y[is_train].mean())
+    # per-patient TRAIN resistance rate (indexed by patient node id; train patients only)
+    pat_rate = pd.DataFrame({"p": p_idx[is_train], "y": y[is_train]}).groupby("p")["y"].mean()
 
     # --- leakage-safe resistance rates (TRAIN triples only), smoothed ---
     tr = pd.DataFrame({"o": o_idx[is_train], "a": a_idx[is_train], "y": y[is_train]})
@@ -137,7 +198,7 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED) -> dict:
     grew = np.vstack([grew_pairs[PK].map(pat_map).to_numpy(), grew_pairs[ORG].map(org_map).to_numpy()]).astype(np.int64)
     known_resistant = _load_known_resistant(org_map, abx_map)
 
-    return {
+    out = {
         "node_names": {"organism": organisms, "antibiotic": antibiotics, "patient": patients},
         "x": {"organism": organism_x.astype(np.float32),
               "antibiotic": antibiotic_x.astype(np.float32),
@@ -152,6 +213,15 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED) -> dict:
         "split": split.astype(np.int8),                                # {0=train,1=val,2=test}
         "train_pos_weight": float((1 - global_rate) / max(global_rate, 1e-6)),
     }
+
+    if "comorbidity" in enrich:
+        ce = _stream_comorbidity_edges(set(patients), cache_path=comorbidity_cache)
+        names, com_x, com_ei = _build_comorbidity_arrays(ce, pat_map, pat_rate, global_rate)
+        out["node_names"]["comorbidity"] = names
+        out["x"]["comorbidity"] = com_x
+        out["edges"][("patient", "has", "comorbidity")] = com_ei
+
+    return out
 
 
 def to_hetero_data(arrays: dict):
@@ -177,16 +247,19 @@ def to_hetero_data(arrays: dict):
     return data
 
 
-def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int = config.SEED):
+def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int = config.SEED,
+                enrich: tuple = (), comorbidity_cache: str | None = None):
     """Full pipeline: load -> arrays -> HeteroData. Needs torch (run on Colab)."""
     df = load_cohort_frame(ward=ward, sample_n=sample_n)
-    return to_hetero_data(build_arrays(df, seed=seed))
+    return to_hetero_data(build_arrays(df, seed=seed, enrich=enrich,
+                                       comorbidity_cache=comorbidity_cache))
 
 
-def _self_check_arrays(ward: str | None = None) -> dict:
+def _self_check_arrays(ward: str | None = None, enrich: tuple = (),
+                       comorbidity_cache: str | None = None) -> dict:
     """torch-free verification of build_arrays on real data (runs anywhere)."""
     df = load_cohort_frame(ward=ward)
-    A = build_arrays(df)
+    A = build_arrays(df, enrich=enrich, comorbidity_cache=comorbidity_cache)
     n_tri = A["triples"].shape[1]
     tested = A["edges"][("organism", "tested", "antibiotic")]
     grew = A["edges"][("patient", "grew", "organism")]
@@ -195,6 +268,10 @@ def _self_check_arrays(ward: str | None = None) -> dict:
     print(f"nodes: patient={len(A['node_names']['patient']):,} organism={len(A['node_names']['organism'])} "
           f"antibiotic={len(A['node_names']['antibiotic'])}")
     print(f"edges: tested={tested.shape[1]:,} grew={grew.shape[1]:,} known_resistant={kr.shape[1]:,}")
+    if ("patient", "has", "comorbidity") in A["edges"]:
+        ce = A["edges"][("patient", "has", "comorbidity")]
+        print(f"enrichment: comorbidity nodes={len(A['node_names']['comorbidity'])} "
+              f"has_edges={ce.shape[1]:,} feat_dim={A['x']['comorbidity'].shape[1]}")
     print(f"feature dims: patient={A['x']['patient'].shape[1]} organism={A['x']['organism'].shape[1]} "
           f"antibiotic={A['x']['antibiotic'].shape[1]}")
     for nt, x in A["x"].items():
