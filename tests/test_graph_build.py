@@ -11,10 +11,10 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.graph_build import (
-    COM, _age_to_ordinal, _build_comorbidity_arrays, _build_prior_exposure_edges,
-    _medication_to_node, _patient_grouped_split, _smoothed_rate,
+    COM, _age_to_ordinal, _aggregate_labvital_to_patient, _build_comorbidity_arrays,
+    _build_prior_exposure_edges, _medication_to_node, _patient_grouped_split, _smoothed_rate,
 )
-from amr_fed.data_loader import PK
+from amr_fed.data_loader import CK, PK
 
 
 def test_age_to_ordinal():
@@ -94,6 +94,20 @@ def test_build_prior_exposure_edges():
     assert ei.dtype.kind == "i"
 
 
+def test_aggregate_labvital_to_patient():
+    import numpy as np
+    patients = np.array(["pA", "pB", "pC"])          # pC has no lab/vital rows
+    cp = pd.DataFrame({CK: [1, 2, 3], PK: ["pA", "pA", "pB"]})  # pA has 2 cultures
+    lv = pd.DataFrame({CK: [1, 2], "labs_median_wbc": [10.0, 12.0], "vitals_median_hr": [80.0, np.nan]})
+    names, x = _aggregate_labvital_to_patient(cp, lv, patients)
+    assert names[-2:] == ["labs_measured", "vitals_measured"]
+    assert x.shape == (3, len(names)) and np.isfinite(x).all()
+    meas = dict(zip(names, range(len(names))))
+    # pA measured labs+vitals=1 ; pC (no rows) measured=0
+    assert x[0, meas["labs_measured"]] == 1.0 and x[2, meas["labs_measured"]] == 0.0
+    assert x[2, meas["vitals_measured"]] == 0.0
+
+
 if __name__ == "__main__":
     test_age_to_ordinal()
     test_smoothed_rate_shrinks_low_counts()
@@ -101,4 +115,5 @@ if __name__ == "__main__":
     test_build_comorbidity_arrays()
     test_medication_to_node_mapping()
     test_build_prior_exposure_edges()
+    test_aggregate_labvital_to_patient()
     print("OK: graph_build unit tests passed.")

@@ -80,9 +80,11 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
 
 
 def main(ward: str | None = None, enrich: tuple = (), comorbidity_cache: str | None = None,
-         exposure_cache: str | None = None):
+         exposure_cache: str | None = None, rich_patient: bool = False,
+         labvital_cache: str | None = None):
     return train(build_graph(ward=ward, enrich=enrich, comorbidity_cache=comorbidity_cache,
-                             exposure_cache=exposure_cache))
+                             exposure_cache=exposure_cache, rich_patient=rich_patient,
+                             labvital_cache=labvital_cache))
 
 
 if __name__ == "__main__":

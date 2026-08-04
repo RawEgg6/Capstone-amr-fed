@@ -172,6 +172,55 @@ def _build_prior_exposure_edges(exp_df: pd.DataFrame, pat_map: dict, abx_map: di
     return np.vstack([e_p, e_a]).astype(np.int64)
 
 
+def _read_median_cols(name: str) -> tuple[pd.DataFrame, list]:
+    """Per-culture mean of a wide table's median_* columns (labs or vitals).
+
+    Values are stored as strings with 'Null' sentinels; coerce to numeric. A culture
+    may span several Period_Day rows -> collapse to one row per culture by mean.
+    """
+    fp = Path(config.DATA_DIR) / config.ARMD_TABLES[name]
+    med = [c for c in pd.read_csv(fp, nrows=0).columns if c.startswith("median_")]
+    df = pd.read_csv(fp, usecols=[CK] + med, low_memory=False)
+    df[med] = df[med].replace("Null", np.nan).apply(pd.to_numeric, errors="coerce")
+    df = df.groupby(CK, as_index=False)[med].mean()
+    renamed = [f"{name}_{c}" for c in med]
+    df = df.rename(columns=dict(zip(med, renamed)))
+    return df, renamed
+
+
+def _load_labvital_per_culture(cache_path: str | None = None) -> pd.DataFrame:
+    """Per-culture labs+vitals median summary (ward-independent -> cache once, reuse)."""
+    if cache_path and Path(cache_path).exists():
+        return pd.read_parquet(cache_path)
+    labs, _ = _read_median_cols("labs")
+    vit, _ = _read_median_cols("vitals")
+    out = labs.merge(vit, on=CK, how="outer")
+    if cache_path:
+        out.to_parquet(cache_path, index=False)
+    return out
+
+
+def _aggregate_labvital_to_patient(cp_df: pd.DataFrame, lv_df: pd.DataFrame,
+                                   patients: np.ndarray):
+    """Per-patient labs/vitals features + measured flags, aligned to node order.
+
+    cp_df: unique (culture, patient). lv_df: per-culture labs+vitals summary.
+    Averages a patient's cultures; NaN (never measured) -> column median impute,
+    plus a labs_measured / vitals_measured 0/1 flag. Returns (names, float32 X).
+    """
+    feat_cols = [c for c in lv_df.columns if c != CK]
+    per = cp_df.merge(lv_df, on=CK, how="left").groupby(PK)[feat_cols].mean()
+    per = per.reindex(patients)
+    labs_cols = [c for c in feat_cols if c.startswith("labs_")]
+    vit_cols = [c for c in feat_cols if c.startswith("vitals_")]
+    labs_meas = per[labs_cols].notna().any(axis=1).astype(float).to_numpy()
+    vit_meas = per[vit_cols].notna().any(axis=1).astype(float).to_numpy()
+    per = per.fillna(per.median()).fillna(0.0)          # impute (no label -> not leakage)
+    x = _zscore(per[feat_cols].to_numpy())
+    x = np.column_stack([x, labs_meas, vit_meas]).astype(np.float32)
+    return feat_cols + ["labs_measured", "vitals_measured"], x
+
+
 def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
     """(organism, known_resistant, antibiotic) edges from the resistance prior table,
     filtered to organisms/antibiotics that exist as nodes. Returns [2, E] int array."""
@@ -186,7 +235,8 @@ def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
 
 
 def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
-                 comorbidity_cache: str | None = None, exposure_cache: str | None = None) -> dict:
+                 comorbidity_cache: str | None = None, exposure_cache: str | None = None,
+                 rich_patient: bool = False, labvital_cache: str | None = None) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
@@ -253,6 +303,11 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
     ]))
     patient_x = np.hstack([patient_num, gender.to_numpy().astype(float)])
 
+    if rich_patient:  # append labs/vitals node features (+ measured flags)
+        lv = _load_labvital_per_culture(labvital_cache)
+        _, lv_x = _aggregate_labvital_to_patient(df[[CK, PK]].drop_duplicates(), lv, patients)
+        patient_x = np.hstack([patient_x, lv_x])
+
     # --- core edges (directed; reverse added in to_hetero_data) ---
     tested = np.vstack([pair[ORG].map(org_map).to_numpy(), pair[ABX].map(abx_map).to_numpy()]).astype(np.int64)
     grew_pairs = df[[PK, ORG]].drop_duplicates()
@@ -315,19 +370,22 @@ def to_hetero_data(arrays: dict):
 
 def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int = config.SEED,
                 enrich: tuple = (), comorbidity_cache: str | None = None,
-                exposure_cache: str | None = None):
+                exposure_cache: str | None = None, rich_patient: bool = False,
+                labvital_cache: str | None = None):
     """Full pipeline: load -> arrays -> HeteroData. Needs torch (run on Colab)."""
     df = load_cohort_frame(ward=ward, sample_n=sample_n)
     return to_hetero_data(build_arrays(df, seed=seed, enrich=enrich,
                                        comorbidity_cache=comorbidity_cache,
-                                       exposure_cache=exposure_cache))
+                                       exposure_cache=exposure_cache,
+                                       rich_patient=rich_patient, labvital_cache=labvital_cache))
 
 
 def _self_check_arrays(ward: str | None = None, enrich: tuple = (),
-                       comorbidity_cache: str | None = None) -> dict:
+                       comorbidity_cache: str | None = None, rich_patient: bool = False) -> dict:
     """torch-free verification of build_arrays on real data (runs anywhere)."""
     df = load_cohort_frame(ward=ward)
-    A = build_arrays(df, enrich=enrich, comorbidity_cache=comorbidity_cache)
+    A = build_arrays(df, enrich=enrich, comorbidity_cache=comorbidity_cache,
+                     rich_patient=rich_patient)
     n_tri = A["triples"].shape[1]
     tested = A["edges"][("organism", "tested", "antibiotic")]
     grew = A["edges"][("patient", "grew", "organism")]
