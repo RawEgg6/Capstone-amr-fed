@@ -18,13 +18,15 @@ from torch_geometric.nn import HeteroConv, SAGEConv
 
 class AMRSAGE(nn.Module):
     def __init__(self, edge_types, hidden: int = 64, layers: int = 2,
-                 decoder_hidden: int = 64, dropout: float = 0.3):
+                 decoder_hidden: int = 64, dropout: float = 0.3, aggr: str = "sum"):
         super().__init__()
         self.dropout = dropout
         self.convs = nn.ModuleList()
         for _ in range(layers):
             # (-1, -1) = lazy input dims, inferred per relation on first forward.
-            conv = HeteroConv({et: SAGEConv((-1, -1), hidden) for et in edge_types}, aggr="sum")
+            # aggr = how a node combines messages from its DIFFERENT edge types
+            # ("sum" lets high-degree relations dominate; "mean" balances them).
+            conv = HeteroConv({et: SAGEConv((-1, -1), hidden) for et in edge_types}, aggr=aggr)
             self.convs.append(conv)
         self.decoder = nn.Sequential(
             nn.Linear(3 * hidden, decoder_hidden),

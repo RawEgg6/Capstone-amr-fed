@@ -27,7 +27,8 @@ def _macro_f1(y_true: torch.Tensor, logits: torch.Tensor) -> float:
 
 def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
           lr: float = 1e-3, weight_decay: float = 1e-4, eval_every: int = 5,
-          device: str | None = None):
+          dropout: float = 0.3, aggr: str = "sum", device: str | None = None,
+          verbose: bool = True):
     torch.manual_seed(config.SEED)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     data = data.to(device)
@@ -38,7 +39,8 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
     tr, va, te = (m.to(device) for m in (data.train_mask, data.val_mask, data.test_mask))
     pos_weight = data.train_pos_weight.to(device)
 
-    model = AMRSAGE(list(edge_index_dict.keys()), hidden=hidden, layers=layers).to(device)
+    model = AMRSAGE(list(edge_index_dict.keys()), hidden=hidden, layers=layers,
+                    dropout=dropout, aggr=aggr).to(device)
     with torch.no_grad():                       # materialise lazy SAGEConv params before optim
         model.encode(x_dict, edge_index_dict)
 
@@ -59,7 +61,8 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
             if vf1 > best_val:
                 best_val = vf1
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-            print(f"epoch {epoch:3d} | train loss {loss.item():.4f} | val macro-F1 {vf1:.4f}")
+            if verbose:
+                print(f"epoch {epoch:3d} | train loss {loss.item():.4f} | val macro-F1 {vf1:.4f}")
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -72,11 +75,42 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
     baseline_f1 = f1_score(y_te, np.zeros_like(y_te), average="macro")  # always-Susceptible
     pred = (torch.sigmoid(t_logits) >= 0.5).long().cpu().numpy()
 
-    print(f"\nTEST macro-F1: {test_f1:.4f}  |  majority-baseline macro-F1: {baseline_f1:.4f}")
-    print("confusion matrix [rows=true 0/1, cols=pred 0/1]:")
-    print(confusion_matrix(y_te, pred))
+    if verbose:
+        print(f"\nTEST macro-F1: {test_f1:.4f}  |  majority-baseline macro-F1: {baseline_f1:.4f}")
+        print("confusion matrix [rows=true 0/1, cols=pred 0/1]:")
+        print(confusion_matrix(y_te, pred))
     return model, {"best_val_macro_f1": best_val, "test_macro_f1": test_f1,
                    "baseline_macro_f1": baseline_f1}
+
+
+_SWEEP_GRID = [
+    {"aggr": "sum",  "hidden": 64,  "layers": 2, "lr": 1e-3, "epochs": 60},   # current baseline
+    {"aggr": "mean", "hidden": 64,  "layers": 2, "lr": 1e-3, "epochs": 60},   # mean-agg
+    {"aggr": "mean", "hidden": 128, "layers": 2, "lr": 1e-3, "epochs": 80},   # wider
+    {"aggr": "mean", "hidden": 128, "layers": 3, "lr": 5e-4, "epochs": 100},  # deeper + slower
+    {"aggr": "mean", "hidden": 64,  "layers": 2, "lr": 5e-4, "epochs": 100, "dropout": 0.4},  # more reg
+]
+
+
+def sweep(data, configs: list | None = None):
+    """Train several architectures on the SAME prebuilt graph and rank by test macro-F1.
+
+    Answers 'is ~0.66 a real ceiling or under-optimization?'. Build `data` once
+    (build_graph) and pass it in — graph construction is the slow part, not training.
+    """
+    configs = configs or _SWEEP_GRID
+    results = []
+    for i, cfg in enumerate(configs, 1):
+        print(f"[sweep {i}/{len(configs)}] {cfg} ...")
+        _, m = train(data, verbose=False, **cfg)
+        results.append({**cfg, **m})
+    results.sort(key=lambda r: r["test_macro_f1"], reverse=True)
+    print("\n=== SWEEP SUMMARY (best test macro-F1 first) ===")
+    for r in results:
+        print(f"  test={r['test_macro_f1']:.4f}  val={r['best_val_macro_f1']:.4f}  |  "
+              f"aggr={r['aggr']:4s} hidden={r['hidden']} layers={r['layers']} "
+              f"lr={r['lr']} epochs={r.get('epochs', 60)} dropout={r.get('dropout', 0.3)}")
+    return results
 
 
 def main(ward: str | None = None, enrich: tuple = (), comorbidity_cache: str | None = None,
