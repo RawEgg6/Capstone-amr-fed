@@ -79,8 +79,10 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
                    "baseline_macro_f1": baseline_f1}
 
 
-def main(ward: str | None = None, enrich: tuple = (), comorbidity_cache: str | None = None):
-    return train(build_graph(ward=ward, enrich=enrich, comorbidity_cache=comorbidity_cache))
+def main(ward: str | None = None, enrich: tuple = (), comorbidity_cache: str | None = None,
+         exposure_cache: str | None = None):
+    return train(build_graph(ward=ward, enrich=enrich, comorbidity_cache=comorbidity_cache,
+                             exposure_cache=exposure_cache))
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ touches the LABEL (resistance rates) is computed from TRAIN triples only.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,21 @@ from . import config
 from .data_loader import ABX, ADI, CK, ORG, PK, load_cohort_frame
 
 COM = config.COLUMNS["comorbidity"]  # comorbidity_component
+
+# High-volume brand/short names in abx_class_exposure.medication_name whose drug stem
+# doesn't match a tested-antibiotic node name automatically. Maps stem -> node name.
+# (Only brands whose drug IS one of our 54 tested antibiotics; e.g. Zithromax/Azithromycin
+# is omitted because Azithromycin is not a tested node.)
+_ABX_BRAND_ALIASES = {
+    "cipro": "Ciprofloxacin",
+    "levaquin": "Levofloxacin",
+    "keflex": "Cephalexin/Cephalothin",
+    "bactrim": "Trimethoprim/Sulfamethoxazole",
+    "septra": "Trimethoprim/Sulfamethoxazole",
+    "macrobid": "Nitrofurantoin",
+    "macrodantin": "Nitrofurantoin",
+    "flagyl": "Metronidazole",
+}
 
 # age bins are ordinal; rank them by their leading integer ("above 90" -> 90)
 def _age_to_ordinal(age: pd.Series) -> pd.Series:
@@ -111,6 +127,51 @@ def _build_comorbidity_arrays(edge_df: pd.DataFrame, pat_map: dict, pat_rate: pd
     return names, x, edge_index
 
 
+def _med_stem(name: str) -> str:
+    """First drug token of a medication string (drops salts/formulations/combos)."""
+    return re.split(r"[ /-]", str(name).strip().lower())[0]
+
+
+def _medication_to_node(med_names, abx_map: dict) -> dict:
+    """Map each medication_name -> an antibiotic node name (or None if no match)."""
+    stem2node: dict = {}
+    for node in abx_map:                       # node stems from tested-antibiotic names
+        for comp in node.split("/"):
+            stem2node.setdefault(_med_stem(comp), node)
+    stem2node.update(_ABX_BRAND_ALIASES)       # brand overrides win
+    return {m: stem2node.get(_med_stem(m)) for m in med_names}
+
+
+def _load_abx_exposure(patient_ids: set, cache_path: str | None = None) -> pd.DataFrame:
+    """Distinct (patient, medication_name) exposure rows for cohort patients.
+
+    abx_class_exposure is ~540 MB / 5.4M rows — read whole (usecols), not streamed.
+    """
+    if cache_path and Path(cache_path).exists():
+        return pd.read_parquet(cache_path)
+    fp = Path(config.DATA_DIR) / config.ARMD_TABLES["abx_class_exp"]
+    df = pd.read_csv(fp, usecols=[PK, "medication_name"], low_memory=False)
+    df = df[df[PK].isin(patient_ids)].dropna().drop_duplicates()
+    if cache_path:
+        df.to_parquet(cache_path, index=False)
+    return df
+
+
+def _build_prior_exposure_edges(exp_df: pd.DataFrame, pat_map: dict, abx_map: dict) -> np.ndarray:
+    """(patient, prior_exposure, antibiotic) edges — reuses the antibiotic node (no new type)."""
+    m2n = _medication_to_node(exp_df["medication_name"].unique(), abx_map)
+    df = exp_df.assign(node=exp_df["medication_name"].map(m2n)).dropna(subset=["node"])
+    # keep only exposures to patients AND antibiotic nodes present in THIS graph
+    # (a ward subset may lack some of the 54 antibiotics -> alias could point off-graph)
+    df = df[df[PK].isin(pat_map) & df["node"].isin(abx_map)]
+    pairs = df[[PK, "node"]].drop_duplicates()
+    if len(pairs) == 0:
+        return np.empty((2, 0), dtype=np.int64)
+    e_p = pairs[PK].map(pat_map).to_numpy()
+    e_a = pairs["node"].map(abx_map).to_numpy()
+    return np.vstack([e_p, e_a]).astype(np.int64)
+
+
 def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
     """(organism, known_resistant, antibiotic) edges from the resistance prior table,
     filtered to organisms/antibiotics that exist as nodes. Returns [2, E] int array."""
@@ -125,7 +186,7 @@ def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
 
 
 def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
-                 comorbidity_cache: str | None = None) -> dict:
+                 comorbidity_cache: str | None = None, exposure_cache: str | None = None) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
@@ -221,6 +282,11 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
         out["x"]["comorbidity"] = com_x
         out["edges"][("patient", "has", "comorbidity")] = com_ei
 
+    if "prior_exposure" in enrich:
+        ee = _load_abx_exposure(set(patients), cache_path=exposure_cache)
+        out["edges"][("patient", "prior_exposure", "antibiotic")] = \
+            _build_prior_exposure_edges(ee, pat_map, abx_map)
+
     return out
 
 
@@ -248,11 +314,13 @@ def to_hetero_data(arrays: dict):
 
 
 def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int = config.SEED,
-                enrich: tuple = (), comorbidity_cache: str | None = None):
+                enrich: tuple = (), comorbidity_cache: str | None = None,
+                exposure_cache: str | None = None):
     """Full pipeline: load -> arrays -> HeteroData. Needs torch (run on Colab)."""
     df = load_cohort_frame(ward=ward, sample_n=sample_n)
     return to_hetero_data(build_arrays(df, seed=seed, enrich=enrich,
-                                       comorbidity_cache=comorbidity_cache))
+                                       comorbidity_cache=comorbidity_cache,
+                                       exposure_cache=exposure_cache))
 
 
 def _self_check_arrays(ward: str | None = None, enrich: tuple = (),
@@ -272,6 +340,11 @@ def _self_check_arrays(ward: str | None = None, enrich: tuple = (),
         ce = A["edges"][("patient", "has", "comorbidity")]
         print(f"enrichment: comorbidity nodes={len(A['node_names']['comorbidity'])} "
               f"has_edges={ce.shape[1]:,} feat_dim={A['x']['comorbidity'].shape[1]}")
+    if ("patient", "prior_exposure", "antibiotic") in A["edges"]:
+        pe = A["edges"][("patient", "prior_exposure", "antibiotic")]
+        n_abx_hit = len(np.unique(pe[1])) if pe.shape[1] else 0
+        print(f"enrichment: prior_exposure edges={pe.shape[1]:,} "
+              f"antibiotic nodes hit={n_abx_hit}/{len(A['node_names']['antibiotic'])}")
     print(f"feature dims: patient={A['x']['patient'].shape[1]} organism={A['x']['organism'].shape[1]} "
           f"antibiotic={A['x']['antibiotic'].shape[1]}")
     for nt, x in A["x"].items():

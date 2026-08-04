@@ -11,7 +11,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.graph_build import (
-    COM, _age_to_ordinal, _build_comorbidity_arrays, _patient_grouped_split, _smoothed_rate,
+    COM, _age_to_ordinal, _build_comorbidity_arrays, _build_prior_exposure_edges,
+    _medication_to_node, _patient_grouped_split, _smoothed_rate,
 )
 from amr_fed.data_loader import PK
 
@@ -62,9 +63,42 @@ def test_build_comorbidity_arrays():
     assert set(ei[1].tolist()) == {0, 1}
 
 
+def test_medication_to_node_mapping():
+    abx_map = {"Ciprofloxacin": 0, "Levofloxacin": 1, "Trimethoprim/Sulfamethoxazole": 2,
+               "Vancomycin": 3, "Nitrofurantoin": 4}
+    m2n = _medication_to_node(
+        ["Ciprofloxacin Hcl", "Levofloxacin In", "Vancomycin In Dextrose",
+         "Cipro", "Bactrim Ds", "Macrobid", "Sulfamethoxazole-Trimethoprim",
+         "Zithromax", "Rifaximin"],
+        abx_map)
+    assert m2n["Ciprofloxacin Hcl"] == "Ciprofloxacin"      # salt stripped
+    assert m2n["Levofloxacin In"] == "Levofloxacin"          # formulation stripped
+    assert m2n["Vancomycin In Dextrose"] == "Vancomycin"
+    assert m2n["Cipro"] == "Ciprofloxacin"                   # brand alias
+    assert m2n["Bactrim Ds"] == "Trimethoprim/Sulfamethoxazole"
+    assert m2n["Macrobid"] == "Nitrofurantoin"
+    assert m2n["Sulfamethoxazole-Trimethoprim"] == "Trimethoprim/Sulfamethoxazole"  # combo stem
+    assert m2n["Zithromax"] is None and m2n["Rifaximin"] is None  # not tested nodes -> drop
+
+
+def test_build_prior_exposure_edges():
+    pat_map = {"pA": 0, "pB": 1}
+    abx_map = {"Ciprofloxacin": 0, "Vancomycin": 1}
+    exp = pd.DataFrame({
+        PK: ["pA", "pA", "pB", "pZ"],                        # pZ not in cohort -> dropped
+        "medication_name": ["Ciprofloxacin Hcl", "Vancomycin", "Cipro", "Vancomycin"],
+    })
+    ei = _build_prior_exposure_edges(exp, pat_map, abx_map)
+    edges = set(map(tuple, ei.T.tolist()))
+    assert edges == {(0, 0), (0, 1), (1, 0)}, edges          # pA->cipro,vanco ; pB->cipro
+    assert ei.dtype.kind == "i"
+
+
 if __name__ == "__main__":
     test_age_to_ordinal()
     test_smoothed_rate_shrinks_low_counts()
     test_patient_grouped_split_disjoint_and_deterministic()
     test_build_comorbidity_arrays()
+    test_medication_to_node_mapping()
+    test_build_prior_exposure_edges()
     print("OK: graph_build unit tests passed.")
