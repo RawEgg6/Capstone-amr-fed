@@ -27,6 +27,7 @@ from . import config
 from .data_loader import ABX, ADI, CK, ORG, PK, load_cohort_frame
 
 COM = config.COLUMNS["comorbidity"]  # comorbidity_component
+PROC = config.COLUMNS["procedure"]   # procedure_description
 
 # High-volume brand/short names in abx_class_exposure.medication_name whose drug stem
 # doesn't match a tested-antibiotic node name automatically. Maps stem -> node name.
@@ -98,33 +99,54 @@ def _stream_comorbidity_edges(patient_ids: set, chunksize: int = 2_000_000,
     return edges
 
 
-def _build_comorbidity_arrays(edge_df: pd.DataFrame, pat_map: dict, pat_rate: pd.Series,
-                              global_rate: float):
-    """(comorbidity node names, float features, (patient,has,comorbidity) edge_index).
+def _build_patient_entity_arrays(edge_df: pd.DataFrame, ecol: str, pat_map: dict,
+                                 pat_rate: pd.Series, global_rate: float):
+    """Generic (entity node names, features, (patient,-,entity) edge_index).
 
-    Features (real signals, no identity one-hot): log prevalence (# distinct patients)
-    and a leakage-safe resistance association — mean of connected TRAIN patients'
-    resistance rates, shrunk toward the global rate. `pat_rate` is indexed by patient
-    node id and defined for TRAIN patients only.
+    Used for both comorbidity and procedure enrichment nodes. Features (real signals,
+    no identity one-hot): log prevalence (# distinct patients) and a leakage-safe
+    resistance association — mean of connected TRAIN patients' resistance rates,
+    shrunk toward the global rate. `pat_rate` is indexed by patient node id and
+    defined for TRAIN patients only.
     """
     edge_df = edge_df[edge_df[PK].isin(pat_map)]
-    names = np.sort(edge_df[COM].unique())
-    com_map = {v: i for i, v in enumerate(names)}
+    names = np.sort(edge_df[ecol].unique())
+    emap = {v: i for i, v in enumerate(names)}
     n = len(names)
     e_p = edge_df[PK].map(pat_map).to_numpy()
-    e_c = edge_df[COM].map(com_map).to_numpy()
+    e_e = edge_df[ecol].map(emap).to_numpy()
 
-    ecom = pd.DataFrame({"p": e_p, "c": e_c})
-    ecom["rate"] = ecom["p"].map(pat_rate)                 # NaN for val/test patients
-    grp = ecom.dropna(subset=["rate"]).groupby("c")["rate"]
+    ee = pd.DataFrame({"p": e_p, "e": e_e})
+    ee["rate"] = ee["p"].map(pat_rate)                     # NaN for val/test patients
+    grp = ee.dropna(subset=["rate"]).groupby("e")["rate"]
     n_tot = grp.count().reindex(range(n), fill_value=0)
     n_pos = grp.sum().reindex(range(n), fill_value=0.0)
-    com_rate = _smoothed_rate(n_pos, n_tot, global_rate).to_numpy()
-    com_prev = ecom.groupby("c").size().reindex(range(n), fill_value=0).to_numpy()
+    ent_rate = _smoothed_rate(n_pos, n_tot, global_rate).to_numpy()
+    ent_prev = ee.groupby("e").size().reindex(range(n), fill_value=0).to_numpy()
 
-    x = _zscore(np.column_stack([np.log1p(com_prev), com_rate])).astype(np.float32)
-    edge_index = np.vstack([e_p, e_c]).astype(np.int64)
-    return names, x, edge_index
+    x = _zscore(np.column_stack([np.log1p(ent_prev), ent_rate])).astype(np.float32)
+    return names, x, np.vstack([e_p, e_e]).astype(np.int64)
+
+
+def _build_comorbidity_arrays(edge_df: pd.DataFrame, pat_map: dict, pat_rate: pd.Series,
+                              global_rate: float):
+    """(comorbidity node names, features, (patient,has,comorbidity) edge_index)."""
+    return _build_patient_entity_arrays(edge_df, COM, pat_map, pat_rate, global_rate)
+
+
+def _load_procedure_edges(patient_ids: set, cache_path: str | None = None) -> pd.DataFrame:
+    """Distinct (patient, procedure_description) rows for cohort patients.
+
+    priorprocedures is ~126 MB — read whole (usecols), not streamed.
+    """
+    if cache_path and Path(cache_path).exists():
+        return pd.read_parquet(cache_path)
+    fp = Path(config.DATA_DIR) / config.ARMD_TABLES["procedures"]
+    df = pd.read_csv(fp, usecols=[PK, PROC], low_memory=False)
+    df = df[df[PK].isin(patient_ids)].dropna().drop_duplicates()
+    if cache_path:
+        df.to_parquet(cache_path, index=False)
+    return df
 
 
 def _med_stem(name: str) -> str:
@@ -236,7 +258,8 @@ def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
 
 def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
                  comorbidity_cache: str | None = None, exposure_cache: str | None = None,
-                 rich_patient: bool = False, labvital_cache: str | None = None) -> dict:
+                 procedure_cache: str | None = None, rich_patient: bool = False,
+                 labvital_cache: str | None = None) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
@@ -342,6 +365,13 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
         out["edges"][("patient", "prior_exposure", "antibiotic")] = \
             _build_prior_exposure_edges(ee, pat_map, abx_map)
 
+    if "procedure" in enrich:
+        pe = _load_procedure_edges(set(patients), cache_path=procedure_cache)
+        names, proc_x, proc_ei = _build_patient_entity_arrays(pe, PROC, pat_map, pat_rate, global_rate)
+        out["node_names"]["procedure"] = names
+        out["x"]["procedure"] = proc_x
+        out["edges"][("patient", "underwent", "procedure")] = proc_ei
+
     return out
 
 
@@ -370,13 +400,14 @@ def to_hetero_data(arrays: dict):
 
 def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int = config.SEED,
                 enrich: tuple = (), comorbidity_cache: str | None = None,
-                exposure_cache: str | None = None, rich_patient: bool = False,
-                labvital_cache: str | None = None):
+                exposure_cache: str | None = None, procedure_cache: str | None = None,
+                rich_patient: bool = False, labvital_cache: str | None = None):
     """Full pipeline: load -> arrays -> HeteroData. Needs torch (run on Colab)."""
     df = load_cohort_frame(ward=ward, sample_n=sample_n)
     return to_hetero_data(build_arrays(df, seed=seed, enrich=enrich,
                                        comorbidity_cache=comorbidity_cache,
                                        exposure_cache=exposure_cache,
+                                       procedure_cache=procedure_cache,
                                        rich_patient=rich_patient, labvital_cache=labvital_cache))
 
 

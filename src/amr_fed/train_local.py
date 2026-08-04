@@ -113,6 +113,76 @@ def sweep(data, configs: list | None = None):
     return results
 
 
+# Trimmed 3-config arch sweep for the exhaustive feature x arch grid (keeps it ~1h).
+_GRID_ARCH = [
+    {"aggr": "sum",  "hidden": 64,  "layers": 2, "lr": 1e-3, "epochs": 60},          # baseline
+    {"aggr": "mean", "hidden": 128, "layers": 2, "lr": 1e-3, "epochs": 80},          # wider, mean
+    {"aggr": "mean", "hidden": 64,  "layers": 2, "lr": 5e-4, "epochs": 100, "dropout": 0.4},  # more reg
+]
+_ENRICH_OPTS = ["comorbidity", "prior_exposure", "procedure"]
+
+
+def full_grid(cache_dir: str = "/content/drive/MyDrive", ward: str | None = None,
+              arch_configs: list | None = None):
+    """Exhaustive search: EVERY feature combination x an architecture sweep.
+
+    Feature combos = the 8 subsets of {comorbidity, prior_exposure, procedure}
+    crossed with rich_patient {off, on} = 16. Each combo is trained under every
+    arch in arch_configs (default 3). The cohort is loaded ONCE and only the graph
+    is rebuilt per combo (caches make enrichment cheap). Prints a running best
+    (so partial results survive a Colab disconnect) and a final Top-10.
+
+    NOTE: ensure the enrichment caches exist first (run cells 6/7/8 once), or the
+    first comorbidity combo will stream the 18GB CSV before caching it.
+    """
+    import gc
+    import itertools
+
+    import torch
+
+    from .data_loader import load_cohort_frame
+    from .graph_build import build_arrays, to_hetero_data
+
+    arch_configs = arch_configs or _GRID_ARCH
+    caches = dict(
+        comorbidity_cache=f"{cache_dir}/amr_comorbidity_edges.parquet",
+        exposure_cache=f"{cache_dir}/amr_prior_exposure_edges.parquet",
+        procedure_cache=f"{cache_dir}/amr_procedure_edges.parquet",
+        labvital_cache=f"{cache_dir}/amr_labvital_per_culture.parquet",
+    )
+    combos = [(tuple(sub), rp)
+              for r in range(len(_ENRICH_OPTS) + 1)
+              for sub in itertools.combinations(_ENRICH_OPTS, r)
+              for rp in (False, True)]
+    print(f"{len(combos)} feature combos x {len(arch_configs)} archs = "
+          f"{len(combos) * len(arch_configs)} runs\n")
+
+    df = load_cohort_frame(ward=ward)                 # loaded ONCE, reused across combos
+    results, best = [], None
+    for ci, (enrich, rp) in enumerate(combos, 1):
+        data = to_hetero_data(build_arrays(df, enrich=enrich, rich_patient=rp, **caches))
+        feats = ("+".join(enrich) or "core") + (" +labs/vitals" if rp else "")
+        for cfg in arch_configs:
+            _, m = train(data, verbose=False, **cfg)
+            row = {"feats": feats, **cfg, **m}
+            results.append(row)
+            if best is None or m["test_macro_f1"] > best["test_macro_f1"]:
+                best = row
+        del data
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"[{ci:2d}/{len(combos)}] {feats:<40s} best-so-far "
+              f"test={best['test_macro_f1']:.4f} ({best['feats']}, aggr={best['aggr']}, h={best['hidden']})")
+
+    results.sort(key=lambda r: r["test_macro_f1"], reverse=True)
+    print(f"\n=== TOP 10 of {len(results)} runs (core reference = 0.663) ===")
+    for r in results[:10]:
+        print(f"  test={r['test_macro_f1']:.4f} val={r['best_val_macro_f1']:.4f} | "
+              f"{r['feats']:<40s} | aggr={r['aggr']:4s} h={r['hidden']} L={r['layers']} lr={r['lr']}")
+    return results
+
+
 def main(ward: str | None = None, enrich: tuple = (), comorbidity_cache: str | None = None,
          exposure_cache: str | None = None, rich_patient: bool = False,
          labvital_cache: str | None = None):
