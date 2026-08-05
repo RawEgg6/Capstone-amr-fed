@@ -17,7 +17,7 @@ from ..partition import dirichlet_ward_mixture
 from . import client_app, server_app
 from .task import (
     DEVICE, build_and_save_clients, init_model_on, load_client_graph,
-    local_eval, local_train, write_run_config,
+    local_eval, local_train, read_fed_history, reset_fed_history, write_run_config,
 )
 
 POOLED_REFERENCE = 0.663  # Phase-1 core macro-F1 (all data, one model)
@@ -58,21 +58,24 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     print(f"LOCAL-ONLY per-hospital macro-F1: {lo_f1s} | weighted avg = {lo_avg:.4f}")
 
     ngpu = (0.9 / n_clients) if DEVICE == "cuda" else 0.0
-    hist = run_simulation(
+    reset_fed_history()
+    run_simulation(  # returns None in flwr 1.23; the strategy logs per-round F1 to disk
         server_app=server_app.app,
         client_app=client_app.app,
         num_supernodes=n_clients,
         backend_config={"client_resources": {"num_cpus": 1, "num_gpus": ngpu}},
     )
-    fed = hist.metrics_distributed.get("macro_f1", [])
-    print("FEDAVG macro-F1 by round:", [(r, round(v, 4)) for r, v in fed])
-    fed_final = round(fed[-1][1], 4) if fed else None
+    fed = read_fed_history()
+    print("FEDAVG macro-F1 by round:", [round(v, 4) for v in fed])
+    fed_best = round(max(fed), 4) if fed else None      # best round (FedAvg drifts on non-IID)
+    fed_final = round(fed[-1], 4) if fed else None
 
     print(f"\n=== Phase 3 comparison (alpha={alpha}) ===")
-    print(f"  pooled (Phase 1, all data)    : {POOLED_REFERENCE}")
-    print(f"  FedAvg (federated)            : {fed_final}")
-    print(f"  local-only (alone, weighted)  : {lo_avg:.4f}")
-    if fed_final is not None:
-        print(f"  => FedAvg {'BEATS' if fed_final > lo_avg else 'does NOT beat'} local-only")
-    return {"alpha": alpha, "pooled": POOLED_REFERENCE, "fedavg": fed_final,
-            "local_only": lo_avg, "local_only_per_client": lo_f1s, "sizes": sizes}
+    print(f"  pooled (Phase 1, all data)     : {POOLED_REFERENCE}")
+    print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final}")
+    print(f"  local-only (alone, weighted)   : {lo_avg:.4f}")
+    if fed_best is not None:
+        print(f"  => FedAvg (best) {'BEATS' if fed_best > lo_avg else 'does NOT beat'} local-only")
+    return {"alpha": alpha, "pooled": POOLED_REFERENCE, "fedavg_best": fed_best,
+            "fedavg_final": fed_final, "local_only": lo_avg,
+            "local_only_per_client": lo_f1s, "sizes": sizes, "fed_by_round": fed}

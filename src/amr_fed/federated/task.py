@@ -37,7 +37,26 @@ CANONICAL_EDGES = [
 ]
 
 CLIENTS_DIR = Path(tempfile.gettempdir()) / "amr_fed_clients"
+FED_HISTORY = CLIENTS_DIR / "fed_history.jsonl"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# ---- federated metric history (flwr 1.23 run_simulation returns None, so the
+#      strategy appends each round's aggregated macro-F1 here for run.py to read) ----
+def reset_fed_history() -> None:
+    CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+    FED_HISTORY.write_text("")
+
+
+def append_fed_metric(macro_f1: float) -> None:
+    with open(FED_HISTORY, "a") as f:
+        f.write(json.dumps({"macro_f1": macro_f1}) + "\n")
+
+
+def read_fed_history() -> list[float]:
+    if not FED_HISTORY.exists():
+        return []
+    return [json.loads(x)["macro_f1"] for x in FED_HISTORY.read_text().splitlines() if x.strip()]
 
 
 # ---- disk hand-off (Ray clients are separate processes) --------------------

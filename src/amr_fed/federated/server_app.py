@@ -12,15 +12,18 @@ from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
 
-from .task import get_weights, init_model_on, load_client_graph, read_run_config
+from .task import (
+    append_fed_metric, get_weights, init_model_on, load_client_graph, read_run_config,
+)
 
 
 def _weighted_macro_f1(metrics: list) -> dict:
-    """metrics: list of (num_examples, {"macro_f1": ...}) -> test-weighted mean."""
+    """metrics: list of (num_examples, {"macro_f1": ...}) -> test-weighted mean.
+    Also appends the round's value to the history file (run_simulation returns None)."""
     total = sum(n for n, _ in metrics)
-    if total == 0:
-        return {"macro_f1": 0.0}
-    return {"macro_f1": sum(n * m["macro_f1"] for n, m in metrics) / total}
+    f1 = sum(n * m["macro_f1"] for n, m in metrics) / total if total else 0.0
+    append_fed_metric(f1)
+    return {"macro_f1": f1}
 
 
 def server_fn(context: Context):
