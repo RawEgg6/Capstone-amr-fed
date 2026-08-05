@@ -92,28 +92,39 @@ def _pad_canonical_edges(data):
     return data
 
 
-def build_and_save_clients(df, assignment, n_clients: int, seed: int = config.SEED) -> list[int]:
+def build_and_save_clients(df, assignment, n_clients: int, seed: int = config.SEED,
+                           patient_history: bool = True) -> list[int]:
     """Build one core graph per hospital (patient subset), pad edges, save to disk.
-    Returns per-client patient counts."""
+    patient_history adds the per-test prior-resistance decoder features (the Phase-1
+    winning feature) to every client. Returns per-client patient counts."""
     sizes = []
     for c in range(n_clients):
         sub = df[df[PK].map(assignment) == c]
-        data = _pad_canonical_edges(to_hetero_data(build_arrays(sub, seed=seed)))
+        data = _pad_canonical_edges(to_hetero_data(
+            build_arrays(sub, seed=seed, patient_history=patient_history)))
         save_client_graph(c, data)
         sizes.append(int(data["patient"].num_nodes))
     return sizes
 
 
 # ---- model + train/eval ----------------------------------------------------
-def make_model(cfg: dict):
+def _tf_dim(data) -> int:
+    tf = getattr(data, "triple_feat", None)
+    return tf.shape[1] if tf is not None else 0
+
+
+def make_model(cfg: dict, triple_feat_dim: int = 0):
     return AMRSAGE(CANONICAL_EDGES, hidden=cfg["hidden"], layers=cfg["layers"],
-                   aggr=cfg["aggr"]).to(DEVICE)
+                   aggr=cfg["aggr"], triple_feat_dim=triple_feat_dim).to(DEVICE)
 
 
 def init_model_on(data, cfg: dict):
-    """Build a model and materialise its lazy params via one forward pass."""
-    model = make_model(cfg)
+    """Build a model and materialise its lazy params via one forward pass.
+    triple_feat_dim is read from the graph so every client's decoder matches (must be
+    identical across clients for FedAvg weight aggregation — guaranteed since all clients
+    use the same patient_history setting)."""
     data = data.to(DEVICE)
+    model = make_model(cfg, _tf_dim(data))
     with torch.no_grad():
         model.encode(data.x_dict, data.edge_index_dict)
     return model
@@ -132,13 +143,18 @@ def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float 
     data = data.to(DEVICE)
     tr = data.train_mask.to(DEVICE)
     tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+    tf = getattr(data, "triple_feat", None)
+    if tf is not None:
+        tf = tf.to(DEVICE)
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=data.train_pos_weight.to(DEVICE))
     model.train()
     loss = torch.tensor(0.0)
     for _ in range(epochs):
         opt.zero_grad()
-        loss = loss_fn(model(data.x_dict, data.edge_index_dict, tri[:, tr]), y[tr])
+        out = model(data.x_dict, data.edge_index_dict, tri[:, tr],
+                    tf[tr] if tf is not None else None)
+        loss = loss_fn(out, y[tr])
         loss.backward()
         opt.step()
     return float(loss.item())
@@ -149,8 +165,12 @@ def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, int]:
     data = data.to(DEVICE)
     mask = getattr(data, mask_name).to(DEVICE)
     tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+    tf = getattr(data, "triple_feat", None)
+    if tf is not None:
+        tf = tf.to(DEVICE)
     model.eval()
     if int(mask.sum()) == 0:
         return 0.0, 0
-    logits = model(data.x_dict, data.edge_index_dict, tri[:, mask])
+    logits = model(data.x_dict, data.edge_index_dict, tri[:, mask],
+                   tf[mask] if tf is not None else None)
     return _macro_f1(y[mask], logits), int(mask.sum())

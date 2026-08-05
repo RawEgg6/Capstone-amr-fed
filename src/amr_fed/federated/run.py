@@ -21,7 +21,7 @@ from .task import (
     local_eval, local_train, read_fed_history, reset_fed_history, write_run_config,
 )
 
-POOLED_REFERENCE = 0.663  # Phase-1 core macro-F1 (all data, one model)
+POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
 
 
 def _run_config(n_clients: int, rounds: int, local_epochs: int) -> dict:
@@ -46,7 +46,7 @@ def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
 
 def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                local_epochs: int = 6, local_only_epochs: int = 60,
-               seed: int = config.SEED, df=None):
+               seed: int = config.SEED, patient_history: bool = True, df=None):
     import torch
     from flwr.simulation import run_simulation
 
@@ -55,7 +55,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     assign = dirichlet_ward_mixture(df, n_clients=n_clients, alpha=alpha, seed=seed)
     cfg = _run_config(n_clients, rounds, local_epochs)
     write_run_config(cfg)
-    sizes = build_and_save_clients(df, assign, n_clients, seed=seed)
+    sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
     print(f"alpha={alpha} | {n_clients} hospitals | patients each: {sizes}")
 
     lo_f1s, lo_avg = run_local_only(n_clients, cfg, epochs=local_only_epochs)
@@ -86,7 +86,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
 
 
 def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
-                  local_epochs: int = 6, seeds=(42, 43, 44), df=None):
+                  local_epochs: int = 6, seeds=(42, 43, 44), patient_history: bool = True, df=None):
     """Run FedAvg at one alpha over several seeds; report mean +/- std to denoise
     the partition + training randomness. Loads the cohort ONCE and reuses it."""
     df = load_cohort_frame() if df is None else df
@@ -94,7 +94,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     for s in seeds:
         print(f"\n########## alpha={alpha}  seed={s} ##########")
         runs.append(run_fedavg(alpha=alpha, n_clients=n_clients, rounds=rounds,
-                               local_epochs=local_epochs, seed=s, df=df))
+                               local_epochs=local_epochs, seed=s,
+                               patient_history=patient_history, df=df))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None]
