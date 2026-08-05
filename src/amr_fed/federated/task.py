@@ -1,0 +1,137 @@
+"""Shared task code for the Flower FedAvg simulation (Phase 3).
+
+Each simulated hospital is a patient-subset **core** graph. Two things must be
+identical across clients for weight averaging to work: the feature dims (fixed by
+graph_build) and the model structure. We pin the model to a canonical edge-type
+set (padding missing edges as empty) so every client's state_dict lines up.
+
+Flower's Ray simulation runs each client in its own process, so we hand graphs off
+via disk (fixed path) rather than in-memory globals.
+"""
+from __future__ import annotations
+
+import json
+import tempfile
+from collections import OrderedDict
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch import nn
+
+from .. import config
+from ..data_loader import PK
+from ..graph_build import build_arrays, to_hetero_data
+from ..model import AMRSAGE
+from ..train_local import _macro_f1
+
+# Canonical core edge types — exactly what to_hetero_data emits for the 3 core edges
+# (including reverse edges). Pinned so every client's model has identical submodules.
+CANONICAL_EDGES = [
+    ("organism", "tested", "antibiotic"),
+    ("antibiotic", "rev_tested", "organism"),
+    ("patient", "grew", "organism"),
+    ("organism", "rev_grew", "patient"),
+    ("organism", "known_resistant", "antibiotic"),
+    ("antibiotic", "rev_known_resistant", "organism"),
+]
+
+CLIENTS_DIR = Path(tempfile.gettempdir()) / "amr_fed_clients"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# ---- disk hand-off (Ray clients are separate processes) --------------------
+def _client_path(cid: int) -> Path:
+    return CLIENTS_DIR / f"client_{cid}.pt"
+
+
+def write_run_config(cfg: dict) -> None:
+    CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+    (CLIENTS_DIR / "run_config.json").write_text(json.dumps(cfg))
+
+
+def read_run_config() -> dict:
+    return json.loads((CLIENTS_DIR / "run_config.json").read_text())
+
+
+def save_client_graph(cid: int, data) -> None:
+    CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+    torch.save(data, _client_path(cid))
+
+
+def load_client_graph(cid: int):
+    # weights_only=False is required for PyG HeteroData (not a plain tensor dict).
+    # Safe here: the file is a self-produced local artifact written by this same run
+    # to a temp dir (build_and_save_clients), never untrusted external input.
+    return torch.load(_client_path(cid), weights_only=False)
+
+
+def _pad_canonical_edges(data):
+    for (s, r, d) in CANONICAL_EDGES:
+        if (s, r, d) not in data.edge_index_dict:
+            data[s, r, d].edge_index = torch.empty((2, 0), dtype=torch.long)
+    return data
+
+
+def build_and_save_clients(df, assignment, n_clients: int) -> list[int]:
+    """Build one core graph per hospital (patient subset), pad edges, save to disk.
+    Returns per-client patient counts."""
+    sizes = []
+    for c in range(n_clients):
+        sub = df[df[PK].map(assignment) == c]
+        data = _pad_canonical_edges(to_hetero_data(build_arrays(sub)))
+        save_client_graph(c, data)
+        sizes.append(int(data["patient"].num_nodes))
+    return sizes
+
+
+# ---- model + train/eval ----------------------------------------------------
+def make_model(cfg: dict):
+    return AMRSAGE(CANONICAL_EDGES, hidden=cfg["hidden"], layers=cfg["layers"],
+                   aggr=cfg["aggr"]).to(DEVICE)
+
+
+def init_model_on(data, cfg: dict):
+    """Build a model and materialise its lazy params via one forward pass."""
+    model = make_model(cfg)
+    data = data.to(DEVICE)
+    with torch.no_grad():
+        model.encode(data.x_dict, data.edge_index_dict)
+    return model
+
+
+def get_weights(model) -> list[np.ndarray]:
+    return [v.cpu().numpy() for v in model.state_dict().values()]
+
+
+def set_weights(model, weights) -> None:
+    sd = OrderedDict((k, torch.as_tensor(w)) for k, w in zip(model.state_dict().keys(), weights))
+    model.load_state_dict(sd, strict=True)
+
+
+def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float = 1e-4) -> float:
+    data = data.to(DEVICE)
+    tr = data.train_mask.to(DEVICE)
+    tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=data.train_pos_weight.to(DEVICE))
+    model.train()
+    loss = torch.tensor(0.0)
+    for _ in range(epochs):
+        opt.zero_grad()
+        loss = loss_fn(model(data.x_dict, data.edge_index_dict, tri[:, tr]), y[tr])
+        loss.backward()
+        opt.step()
+    return float(loss.item())
+
+
+@torch.no_grad()
+def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, int]:
+    data = data.to(DEVICE)
+    mask = getattr(data, mask_name).to(DEVICE)
+    tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+    model.eval()
+    if int(mask.sum()) == 0:
+        return 0.0, 0
+    logits = model(data.x_dict, data.edge_index_dict, tri[:, mask])
+    return _macro_f1(y[mask], logits), int(mask.sum())

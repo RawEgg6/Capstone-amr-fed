@@ -311,7 +311,11 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
     age_ord = _age_to_ordinal(pdf[config.COLUMNS["age"]])
     age_known = age_ord.notna().to_numpy().astype(np.float64)
     age_ord = age_ord.fillna(age_ord.median())  # imputation uses no label -> not label leakage
-    gender = pd.get_dummies(pdf[config.COLUMNS["gender"]].astype(str), dummy_na=False)
+    # fixed-width gender encoding (values are '0'/'1'/'Null'); a per-subset one-hot
+    # would vary in width and break federated weight aggregation, so pin 2 columns.
+    gser = pdf[config.COLUMNS["gender"]].astype(str)
+    gender = np.column_stack([(gser == "1").to_numpy(dtype=float),            # is_1
+                              (~gser.isin(["0", "1"])).to_numpy(dtype=float)])  # is_unknown/Null
     adi = pd.to_numeric(pdf[ADI], errors="coerce")
     adi_known = adi.notna().to_numpy().astype(np.float64)
     adi = adi.fillna(adi.median()).to_numpy()
@@ -324,7 +328,7 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
         age_ord.to_numpy(), age_known, adi, adi_known,
         np.log1p(pat_ncult), np.log1p(pat_norg),
     ]))
-    patient_x = np.hstack([patient_num, gender.to_numpy().astype(float)])
+    patient_x = np.hstack([patient_num, gender])
 
     if rich_patient:  # append labs/vitals node features (+ measured flags)
         lv = _load_labvital_per_culture(labvital_cache)
