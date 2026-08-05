@@ -11,9 +11,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.graph_build import (
-    ABX, COM, ORG, TK, _age_to_ordinal, _aggregate_labvital_to_patient, _build_comorbidity_arrays,
-    _build_prior_exposure_edges, _history_raw, _medication_to_node, _patient_grouped_split,
-    _smoothed_rate,
+    ABX, CDESC, COM, ORG, TK, _age_to_ordinal, _aggregate_labvital_to_patient,
+    _build_comorbidity_arrays, _build_prior_exposure_edges, _history_raw, _medication_to_node,
+    _patient_grouped_split, _smoothed_rate, _specimen_features,
 )
 from amr_fed.data_loader import CK, PK
 
@@ -129,6 +129,13 @@ def test_history_raw_is_leakage_safe():
     assert np.allclose(raw[:, 1], [0.2, 3 / 11, 3 / 12], atol=1e-6), raw[:, 1]
 
 
+def test_specimen_features_fixed_onehot():
+    df = pd.DataFrame({CDESC: ["URINE", "respiratory", "BLOOD", "URINE"]})
+    x = _specimen_features(df)
+    assert x.shape == (4, 3)                       # fixed 3-way one-hot regardless of subset
+    assert x.tolist() == [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 0]]  # case-insensitive
+
+
 if __name__ == "__main__":
     test_age_to_ordinal()
     test_smoothed_rate_shrinks_low_counts()
@@ -138,4 +145,5 @@ if __name__ == "__main__":
     test_build_prior_exposure_edges()
     test_aggregate_labvital_to_patient()
     test_history_raw_is_leakage_safe()
+    test_specimen_features_fixed_onehot()
     print("OK: graph_build unit tests passed.")

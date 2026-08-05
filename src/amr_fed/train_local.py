@@ -210,10 +210,12 @@ def full_grid(cache_dir: str = "/content/drive/MyDrive", ward: str | None = None
 
 def main(ward: str | None = None, enrich: tuple = (), comorbidity_cache: str | None = None,
          exposure_cache: str | None = None, rich_patient: bool = False,
-         labvital_cache: str | None = None, patient_history: bool = False):
+         labvital_cache: str | None = None, patient_history: bool = False,
+         specimen: bool = False):
     return train(build_graph(ward=ward, enrich=enrich, comorbidity_cache=comorbidity_cache,
                              exposure_cache=exposure_cache, rich_patient=rich_patient,
-                             labvital_cache=labvital_cache, patient_history=patient_history))
+                             labvital_cache=labvital_cache, patient_history=patient_history,
+                             specimen=specimen))
 
 
 if __name__ == "__main__":

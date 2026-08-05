@@ -29,6 +29,8 @@ from .data_loader import ABX, ADI, CK, ORG, PK, load_cohort_frame
 COM = config.COLUMNS["comorbidity"]  # comorbidity_component
 PROC = config.COLUMNS["procedure"]   # procedure_description
 TK = config.KEYS["time"]             # order_time_jittered_utc
+CDESC = config.COLUMNS["culture_description"]
+_SPECIMEN_VOCAB = ["URINE", "RESPIRATORY", "BLOOD"]  # ARMD has exactly these 3 (fixed one-hot)
 
 # High-volume brand/short names in abx_class_exposure.medication_name whose drug stem
 # doesn't match a tested-antibiotic node name automatically. Maps stem -> node name.
@@ -291,10 +293,18 @@ def _patient_history_features(df: pd.DataFrame, global_rate: float, alpha: float
     return _zscore(_history_raw(df, global_rate, alpha)).astype(np.float32)
 
 
+def _specimen_features(df: pd.DataFrame) -> np.ndarray:
+    """Per-test specimen-source one-hot (urine/respiratory/blood) — resistance varies by
+    source (EDA: urine ~0.18 vs respiratory ~0.29). Fixed vocab so widths match across clients."""
+    cd = df[CDESC].astype(str).str.upper()
+    return np.column_stack([(cd == s).to_numpy(dtype=np.float32) for s in _SPECIMEN_VOCAB])
+
+
 def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
                  comorbidity_cache: str | None = None, exposure_cache: str | None = None,
                  procedure_cache: str | None = None, rich_patient: bool = False,
-                 labvital_cache: str | None = None, patient_history: bool = False) -> dict:
+                 labvital_cache: str | None = None, patient_history: bool = False,
+                 specimen: bool = False) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
@@ -411,8 +421,14 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
         out["x"]["procedure"] = proc_x
         out["edges"][("patient", "underwent", "procedure")] = proc_ei
 
-    if patient_history:  # per-test decoder features (prior-resistance predictors)
-        out["triple_feat"] = _patient_history_features(df, global_rate)
+    # per-test decoder feature blocks (concatenated if any are requested)
+    feat_blocks = []
+    if patient_history:
+        feat_blocks.append(_patient_history_features(df, global_rate))
+    if specimen:
+        feat_blocks.append(_specimen_features(df))
+    if feat_blocks:
+        out["triple_feat"] = np.hstack(feat_blocks).astype(np.float32)
 
     return out
 
@@ -446,7 +462,7 @@ def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int 
                 enrich: tuple = (), comorbidity_cache: str | None = None,
                 exposure_cache: str | None = None, procedure_cache: str | None = None,
                 rich_patient: bool = False, labvital_cache: str | None = None,
-                patient_history: bool = False):
+                patient_history: bool = False, specimen: bool = False):
     """Full pipeline: load -> arrays -> HeteroData. Needs torch (run on Colab)."""
     df = load_cohort_frame(ward=ward, sample_n=sample_n)
     return to_hetero_data(build_arrays(df, seed=seed, enrich=enrich,
@@ -454,7 +470,7 @@ def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int 
                                        exposure_cache=exposure_cache,
                                        procedure_cache=procedure_cache,
                                        rich_patient=rich_patient, labvital_cache=labvital_cache,
-                                       patient_history=patient_history))
+                                       patient_history=patient_history, specimen=specimen))
 
 
 def _self_check_arrays(ward: str | None = None, enrich: tuple = (),
