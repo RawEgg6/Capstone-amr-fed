@@ -300,11 +300,42 @@ def _specimen_features(df: pd.DataFrame) -> np.ndarray:
     return np.column_stack([(cd == s).to_numpy(dtype=np.float32) for s in _SPECIMEN_VOCAB])
 
 
+def _load_prescription_history(cache_path: str | None = None) -> pd.DataFrame:
+    """Per-culture prior-antibiotic-prescription summary from abx_class_exposure.
+    That table's `time_to_culturetime` is days BEFORE the culture (all positive), so these
+    are prior by construction (leakage-safe). Ward-independent -> cache once, reuse."""
+    if cache_path and Path(cache_path).exists():
+        return pd.read_parquet(cache_path)
+    fp = Path(config.DATA_DIR) / config.ARMD_TABLES["abx_class_exp"]
+    e = pd.read_csv(fp, usecols=[CK, "antibiotic_class", "time_to_culturetime"], low_memory=False)
+    e["time_to_culturetime"] = pd.to_numeric(e["time_to_culturetime"], errors="coerce")
+    agg = e.groupby(CK).agg(presc_n=("antibiotic_class", "size"),
+                            presc_nclass=("antibiotic_class", "nunique"),
+                            presc_recency=("time_to_culturetime", "min")).reset_index()
+    if cache_path:
+        agg.to_parquet(cache_path, index=False)
+    return agg
+
+
+def _prescription_features(df: pd.DataFrame, presc_agg: pd.DataFrame) -> np.ndarray:
+    """Per-test prescription features: log #prior exposures, log #distinct classes,
+    log recency (days since most recent), and a has-prior-exposure flag. Coverage ~65%
+    (rest -> zeros + flag=0)."""
+    m = df[[CK]].merge(presc_agg, on=CK, how="left")
+    n = m["presc_n"].fillna(0).to_numpy()
+    nclass = m["presc_nclass"].fillna(0).to_numpy()
+    recency = np.clip(m["presc_recency"].fillna(0).to_numpy(), 0, None)
+    has_prior = (n > 0).astype(np.float32)
+    num = _zscore(np.column_stack([np.log1p(n), np.log1p(nclass), np.log1p(recency)]))
+    return np.column_stack([num, has_prior]).astype(np.float32)
+
+
 def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
                  comorbidity_cache: str | None = None, exposure_cache: str | None = None,
                  procedure_cache: str | None = None, rich_patient: bool = False,
                  labvital_cache: str | None = None, patient_history: bool = False,
-                 specimen: bool = False) -> dict:
+                 specimen: bool = False, prescriptions: bool = False,
+                 prescription_cache: str | None = None) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
@@ -427,6 +458,8 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
         feat_blocks.append(_patient_history_features(df, global_rate))
     if specimen:
         feat_blocks.append(_specimen_features(df))
+    if prescriptions:
+        feat_blocks.append(_prescription_features(df, _load_prescription_history(prescription_cache)))
     if feat_blocks:
         out["triple_feat"] = np.hstack(feat_blocks).astype(np.float32)
 
@@ -462,7 +495,8 @@ def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int 
                 enrich: tuple = (), comorbidity_cache: str | None = None,
                 exposure_cache: str | None = None, procedure_cache: str | None = None,
                 rich_patient: bool = False, labvital_cache: str | None = None,
-                patient_history: bool = False, specimen: bool = False):
+                patient_history: bool = False, specimen: bool = False,
+                prescriptions: bool = False, prescription_cache: str | None = None):
     """Full pipeline: load -> arrays -> HeteroData. Needs torch (run on Colab)."""
     df = load_cohort_frame(ward=ward, sample_n=sample_n)
     return to_hetero_data(build_arrays(df, seed=seed, enrich=enrich,
@@ -470,7 +504,9 @@ def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int 
                                        exposure_cache=exposure_cache,
                                        procedure_cache=procedure_cache,
                                        rich_patient=rich_patient, labvital_cache=labvital_cache,
-                                       patient_history=patient_history, specimen=specimen))
+                                       patient_history=patient_history, specimen=specimen,
+                                       prescriptions=prescriptions,
+                                       prescription_cache=prescription_cache))
 
 
 def _self_check_arrays(ward: str | None = None, enrich: tuple = (),

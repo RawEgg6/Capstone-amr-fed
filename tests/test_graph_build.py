@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.graph_build import (
     ABX, CDESC, COM, ORG, TK, _age_to_ordinal, _aggregate_labvital_to_patient,
     _build_comorbidity_arrays, _build_prior_exposure_edges, _history_raw, _medication_to_node,
-    _patient_grouped_split, _smoothed_rate, _specimen_features,
+    _patient_grouped_split, _prescription_features, _smoothed_rate, _specimen_features,
 )
 from amr_fed.data_loader import CK, PK
 
@@ -136,6 +136,15 @@ def test_specimen_features_fixed_onehot():
     assert x.tolist() == [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 0]]  # case-insensitive
 
 
+def test_prescription_features():
+    df = pd.DataFrame({CK: [1, 2, 3]})                 # CK=3 has no prior exposure
+    agg = pd.DataFrame({CK: [1, 2], "presc_n": [3, 1],
+                        "presc_nclass": [2, 1], "presc_recency": [5.0, 30.0]})
+    x = _prescription_features(df, agg)
+    assert x.shape == (3, 4) and np.isfinite(x).all()
+    assert x[:, -1].tolist() == [1.0, 1.0, 0.0]        # has-prior-exposure flag
+
+
 if __name__ == "__main__":
     test_age_to_ordinal()
     test_smoothed_rate_shrinks_low_counts()
@@ -146,4 +155,5 @@ if __name__ == "__main__":
     test_aggregate_labvital_to_patient()
     test_history_raw_is_leakage_safe()
     test_specimen_features_fixed_onehot()
+    test_prescription_features()
     print("OK: graph_build unit tests passed.")
