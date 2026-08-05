@@ -92,13 +92,13 @@ def _pad_canonical_edges(data):
     return data
 
 
-def build_and_save_clients(df, assignment, n_clients: int) -> list[int]:
+def build_and_save_clients(df, assignment, n_clients: int, seed: int = config.SEED) -> list[int]:
     """Build one core graph per hospital (patient subset), pad edges, save to disk.
     Returns per-client patient counts."""
     sizes = []
     for c in range(n_clients):
         sub = df[df[PK].map(assignment) == c]
-        data = _pad_canonical_edges(to_hetero_data(build_arrays(sub)))
+        data = _pad_canonical_edges(to_hetero_data(build_arrays(sub, seed=seed)))
         save_client_graph(c, data)
         sizes.append(int(data["patient"].num_nodes))
     return sizes
