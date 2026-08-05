@@ -18,7 +18,8 @@ from torch_geometric.nn import HeteroConv, SAGEConv
 
 class AMRSAGE(nn.Module):
     def __init__(self, edge_types, hidden: int = 64, layers: int = 2,
-                 decoder_hidden: int = 64, dropout: float = 0.3, aggr: str = "sum"):
+                 decoder_hidden: int = 64, dropout: float = 0.3, aggr: str = "sum",
+                 triple_feat_dim: int = 0):
         super().__init__()
         self.dropout = dropout
         self.convs = nn.ModuleList()
@@ -28,8 +29,9 @@ class AMRSAGE(nn.Module):
             # ("sum" lets high-degree relations dominate; "mean" balances them).
             conv = HeteroConv({et: SAGEConv((-1, -1), hidden) for et in edge_types}, aggr=aggr)
             self.convs.append(conv)
+        # decoder input = [h_patient | h_organism | h_antibiotic | optional per-test features]
         self.decoder = nn.Sequential(
-            nn.Linear(3 * hidden, decoder_hidden),
+            nn.Linear(3 * hidden + triple_feat_dim, decoder_hidden),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(decoder_hidden, 1),
@@ -42,12 +44,14 @@ class AMRSAGE(nn.Module):
                       for k, v in x_dict.items()}
         return x_dict
 
-    def decode(self, h, triple_index):
+    def decode(self, h, triple_index, triple_feat=None):
         # triple_index: [3, N] rows = patient, organism, antibiotic node ids
         z = torch.cat([h["patient"][triple_index[0]],
                        h["organism"][triple_index[1]],
                        h["antibiotic"][triple_index[2]]], dim=-1)
+        if triple_feat is not None:                 # per-test patient-history features
+            z = torch.cat([z, triple_feat], dim=-1)
         return self.decoder(z).squeeze(-1)
 
-    def forward(self, x_dict, edge_index_dict, triple_index):
-        return self.decode(self.encode(x_dict, edge_index_dict), triple_index)
+    def forward(self, x_dict, edge_index_dict, triple_index, triple_feat=None):
+        return self.decode(self.encode(x_dict, edge_index_dict), triple_index, triple_feat)

@@ -11,8 +11,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.graph_build import (
-    COM, _age_to_ordinal, _aggregate_labvital_to_patient, _build_comorbidity_arrays,
-    _build_prior_exposure_edges, _medication_to_node, _patient_grouped_split, _smoothed_rate,
+    ABX, COM, ORG, TK, _age_to_ordinal, _aggregate_labvital_to_patient, _build_comorbidity_arrays,
+    _build_prior_exposure_edges, _history_raw, _medication_to_node, _patient_grouped_split,
+    _smoothed_rate,
 )
 from amr_fed.data_loader import CK, PK
 
@@ -108,6 +109,26 @@ def test_aggregate_labvital_to_patient():
     assert x[2, meas["vitals_measured"]] == 0.0
 
 
+def test_history_raw_is_leakage_safe():
+    # patient pA: 3 cultures in time order with labels [1, 0, 1]
+    df = pd.DataFrame({
+        PK:  ["pA", "pA", "pA"],
+        ORG: ["E", "E", "E"],
+        ABX: ["Cip", "Cip", "Cip"],
+        TK:  ["2020-01-01", "2020-01-02", "2020-01-03"],
+        "label": [1, 0, 1],
+    })
+    raw = _history_raw(df, global_rate=0.2, alpha=10.0)
+    # col0 = log1p(prior count): 0, 1, 2 cultures before
+    assert np.allclose(raw[:, 0], [np.log1p(0), np.log1p(1), np.log1p(2)])
+    # col1 = prior resistance rate, EB-shrunk, CURRENT label excluded:
+    #   row0: no prior -> pure global 0.2
+    #   row1: 1 prior (label 1) -> (1 + 10*0.2)/(1+10) = 3/11
+    #   row2: 2 prior (labels 1,0 -> sum 1) -> (1 + 2)/(2+10) = 3/12
+    # If it leaked the current/future label, row0 would NOT equal 0.2.
+    assert np.allclose(raw[:, 1], [0.2, 3 / 11, 3 / 12], atol=1e-6), raw[:, 1]
+
+
 if __name__ == "__main__":
     test_age_to_ordinal()
     test_smoothed_rate_shrinks_low_counts()
@@ -116,4 +137,5 @@ if __name__ == "__main__":
     test_medication_to_node_mapping()
     test_build_prior_exposure_edges()
     test_aggregate_labvital_to_patient()
+    test_history_raw_is_leakage_safe()
     print("OK: graph_build unit tests passed.")

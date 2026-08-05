@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
 from torch import nn
 
 from . import config
@@ -23,6 +23,16 @@ from .model import AMRSAGE
 def _macro_f1(y_true: torch.Tensor, logits: torch.Tensor) -> float:
     pred = (torch.sigmoid(logits) >= 0.5).long().cpu().numpy()
     return f1_score(y_true.cpu().numpy(), pred, average="macro")
+
+
+def _f1_at(y_np, p_np, thr):
+    return f1_score(y_np, (p_np >= thr).astype(int), average="macro")
+
+
+def _best_threshold(y_np, p_np):
+    """Threshold that maximises macro-F1 on validation (no test leakage)."""
+    grid = np.linspace(0.15, 0.85, 29)
+    return float(max(grid, key=lambda t: _f1_at(y_np, p_np, t)))
 
 
 def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
@@ -38,9 +48,16 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
     y = data.triple_label.to(device).float()
     tr, va, te = (m.to(device) for m in (data.train_mask, data.val_mask, data.test_mask))
     pos_weight = data.train_pos_weight.to(device)
+    tf = getattr(data, "triple_feat", None)                 # per-test patient-history features
+    if tf is not None:
+        tf = tf.to(device)
+    tf_dim = tf.shape[1] if tf is not None else 0
+
+    def fwd(mask):
+        return model(x_dict, edge_index_dict, tri[:, mask], tf[mask] if tf is not None else None)
 
     model = AMRSAGE(list(edge_index_dict.keys()), hidden=hidden, layers=layers,
-                    dropout=dropout, aggr=aggr).to(device)
+                    dropout=dropout, aggr=aggr, triple_feat_dim=tf_dim).to(device)
     with torch.no_grad():                       # materialise lazy SAGEConv params before optim
         model.encode(x_dict, edge_index_dict)
 
@@ -51,13 +68,13 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
     for epoch in range(1, epochs + 1):
         model.train()
         opt.zero_grad()
-        loss = loss_fn(model(x_dict, edge_index_dict, tri[:, tr]), y[tr])
+        loss = loss_fn(fwd(tr), y[tr])
         loss.backward()
         opt.step()
         if epoch % eval_every == 0 or epoch == epochs:
             model.eval()
             with torch.no_grad():
-                vf1 = _macro_f1(y[va], model(x_dict, edge_index_dict, tri[:, va]))
+                vf1 = _macro_f1(y[va], fwd(va))
             if vf1 > best_val:
                 best_val = vf1
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -69,18 +86,26 @@ def train(data, hidden: int = 64, layers: int = 2, epochs: int = 60,
 
     model.eval()
     with torch.no_grad():
-        t_logits = model(x_dict, edge_index_dict, tri[:, te])
-    y_te = y[te].cpu().numpy()
-    test_f1 = _macro_f1(y[te], t_logits)
-    baseline_f1 = f1_score(y_te, np.zeros_like(y_te), average="macro")  # always-Susceptible
-    pred = (torch.sigmoid(t_logits) >= 0.5).long().cpu().numpy()
+        p_val = torch.sigmoid(fwd(va)).cpu().numpy()
+        p_te = torch.sigmoid(fwd(te)).cpu().numpy()
+    y_va, y_te = y[va].cpu().numpy(), y[te].cpu().numpy()
+
+    test_f1 = _f1_at(y_te, p_te, 0.5)                        # fixed-threshold (comparable to before)
+    thr = _best_threshold(y_va, p_val)                       # tuned on val
+    test_f1_tuned = _f1_at(y_te, p_te, thr)
+    auroc = roc_auc_score(y_te, p_te) if len(np.unique(y_te)) > 1 else float("nan")
+    baseline_f1 = f1_score(y_te, np.zeros_like(y_te), average="macro")
 
     if verbose:
-        print(f"\nTEST macro-F1: {test_f1:.4f}  |  majority-baseline macro-F1: {baseline_f1:.4f}")
-        print("confusion matrix [rows=true 0/1, cols=pred 0/1]:")
-        print(confusion_matrix(y_te, pred))
+        tag = " | +patient-history" if tf_dim else ""
+        print(f"\nTEST macro-F1 @0.5: {test_f1:.4f} | @tuned(thr={thr:.2f}): {test_f1_tuned:.4f} "
+              f"| AUROC: {auroc:.4f} | baseline: {baseline_f1:.4f}{tag}")
+        print("confusion matrix @0.5 [rows=true 0/1, cols=pred 0/1]:")
+        print(confusion_matrix(y_te, (p_te >= 0.5).astype(int)))
     return model, {"best_val_macro_f1": best_val, "test_macro_f1": test_f1,
-                   "baseline_macro_f1": baseline_f1}
+                   "test_macro_f1_tuned": round(test_f1_tuned, 4), "auroc": round(float(auroc), 4),
+                   "tuned_threshold": round(thr, 3), "baseline_macro_f1": baseline_f1,
+                   "triple_feat_dim": tf_dim}
 
 
 _SWEEP_GRID = [
@@ -185,10 +210,10 @@ def full_grid(cache_dir: str = "/content/drive/MyDrive", ward: str | None = None
 
 def main(ward: str | None = None, enrich: tuple = (), comorbidity_cache: str | None = None,
          exposure_cache: str | None = None, rich_patient: bool = False,
-         labvital_cache: str | None = None):
+         labvital_cache: str | None = None, patient_history: bool = False):
     return train(build_graph(ward=ward, enrich=enrich, comorbidity_cache=comorbidity_cache,
                              exposure_cache=exposure_cache, rich_patient=rich_patient,
-                             labvital_cache=labvital_cache))
+                             labvital_cache=labvital_cache, patient_history=patient_history))
 
 
 if __name__ == "__main__":

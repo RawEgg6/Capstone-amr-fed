@@ -28,6 +28,7 @@ from .data_loader import ABX, ADI, CK, ORG, PK, load_cohort_frame
 
 COM = config.COLUMNS["comorbidity"]  # comorbidity_component
 PROC = config.COLUMNS["procedure"]   # procedure_description
+TK = config.KEYS["time"]             # order_time_jittered_utc
 
 # High-volume brand/short names in abx_class_exposure.medication_name whose drug stem
 # doesn't match a tested-antibiotic node name automatically. Maps stem -> node name.
@@ -256,10 +257,44 @@ def _load_known_resistant(org_map: dict, abx_map: dict) -> np.ndarray:
     return np.vstack([src, dst]).astype(np.int64)
 
 
+def _history_raw(df: pd.DataFrame, global_rate: float, alpha: float = 10.0) -> np.ndarray:
+    """Raw (un-standardised) per-test patient-history features, in df row order.
+
+    Columns: log prior-culture-count, prior resistance rate (overall / same-antibiotic /
+    same-organism, EB-shrunk toward global), log days-since-previous-culture.
+    Leakage-safe: each test sees only the patient's cultures STRICTLY BEFORE it.
+    """
+    d = df[[PK, ORG, ABX, TK, "label"]].copy()
+    d["t"] = pd.to_datetime(d[TK], errors="coerce", utc=True)
+    d = d.sort_values([PK, "t"], kind="stable")
+    lab = d["label"].to_numpy().astype(float)
+
+    def prior_rate(keys):
+        g = d.groupby(keys, sort=False)
+        n = g.cumcount().to_numpy().astype(float)          # #cultures before this one
+        s = g["label"].cumsum().to_numpy() - lab           # sum of prior labels (excl. current)
+        return n, (s + alpha * global_rate) / (n + alpha)  # EB-shrunk prior resistance rate
+
+    n_all, r_all = prior_rate(PK)
+    _, r_abx = prior_rate([PK, ABX])
+    _, r_org = prior_rate([PK, ORG])
+    days_since = (d["t"] - d.groupby(PK, sort=False)["t"].shift(1)).dt.total_seconds().to_numpy() / 86400.0
+    days_since = np.nan_to_num(days_since, nan=0.0)         # first-ever culture -> 0
+
+    feat = np.column_stack([np.log1p(n_all), r_all, r_abx, r_org,
+                            np.log1p(np.clip(days_since, 0, None))])
+    return pd.DataFrame(feat, index=d.index).reindex(df.index).to_numpy()  # back to df order
+
+
+def _patient_history_features(df: pd.DataFrame, global_rate: float, alpha: float = 10.0) -> np.ndarray:
+    """Standardised patient-history predictors (personalized-antibiogram signal; Corbin 2022)."""
+    return _zscore(_history_raw(df, global_rate, alpha)).astype(np.float32)
+
+
 def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
                  comorbidity_cache: str | None = None, exposure_cache: str | None = None,
                  procedure_cache: str | None = None, rich_patient: bool = False,
-                 labvital_cache: str | None = None) -> dict:
+                 labvital_cache: str | None = None, patient_history: bool = False) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
@@ -376,6 +411,9 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
         out["x"]["procedure"] = proc_x
         out["edges"][("patient", "underwent", "procedure")] = proc_ei
 
+    if patient_history:  # per-test decoder features (prior-resistance predictors)
+        out["triple_feat"] = _patient_history_features(df, global_rate)
+
     return out
 
 
@@ -394,6 +432,8 @@ def to_hetero_data(arrays: dict):
     tri = torch.from_numpy(arrays["triples"])
     data.triple_index = tri                      # [3, N]: patient, organism, antibiotic
     data.triple_label = torch.from_numpy(arrays["y"])
+    if "triple_feat" in arrays:                  # per-test patient-history decoder features
+        data.triple_feat = torch.from_numpy(arrays["triple_feat"])
     split = torch.from_numpy(arrays["split"])
     data.train_mask = split == 0
     data.val_mask = split == 1
@@ -405,14 +445,16 @@ def to_hetero_data(arrays: dict):
 def build_graph(ward: str | None = None, sample_n: int | None = None, seed: int = config.SEED,
                 enrich: tuple = (), comorbidity_cache: str | None = None,
                 exposure_cache: str | None = None, procedure_cache: str | None = None,
-                rich_patient: bool = False, labvital_cache: str | None = None):
+                rich_patient: bool = False, labvital_cache: str | None = None,
+                patient_history: bool = False):
     """Full pipeline: load -> arrays -> HeteroData. Needs torch (run on Colab)."""
     df = load_cohort_frame(ward=ward, sample_n=sample_n)
     return to_hetero_data(build_arrays(df, seed=seed, enrich=enrich,
                                        comorbidity_cache=comorbidity_cache,
                                        exposure_cache=exposure_cache,
                                        procedure_cache=procedure_cache,
-                                       rich_patient=rich_patient, labvital_cache=labvital_cache))
+                                       rich_patient=rich_patient, labvital_cache=labvital_cache,
+                                       patient_history=patient_history))
 
 
 def _self_check_arrays(ward: str | None = None, enrich: tuple = (),
