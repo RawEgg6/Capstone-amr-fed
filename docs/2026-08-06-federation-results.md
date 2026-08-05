@@ -1,111 +1,124 @@
 # Federation Results & Status (Phases 2–3)
 
-**AMR Federated Knowledge-Graph Capstone** · 2026-08-06
+**AMR Federated Knowledge-Graph Capstone** · updated 2026-08-06
 **Team:** Vikram, Saffiya, Sanjana, Arshia · **Guide:** Dr. Swati Jagdale
 
 ---
 
-## TL;DR
+## TL;DR (updated — we broke the earlier ceiling)
 
-We built and validated the full federated pipeline — partitioning into simulated
-hospitals, a FedAvg baseline, and a multi-seed heterogeneity sweep. **Federation
-works** (hospitals collaborating beat each going it alone by a steady ~+0.03 macro-F1,
-without sharing patient data). But the gain is **flat across heterogeneity** and
-**FedAvg already sits at the pooled ceiling (~0.663)** — so the planned topology-aware
-aggregation has **limited headroom** to show a clear numerical win. This document
-records the numbers and the decision that follows.
-
----
-
-## What "macro-F1 = 0.663" means, and is it good?
-
-**F1** balances *precision* (of what the model flagged as resistant, how much really
-was) and *recall* (of the truly resistant cases, how many it caught). **Macro-F1**
-averages the F1 of both classes *equally*, so a model can't score well just by
-predicting the common "susceptible" class — it's the honest metric for imbalanced data.
-
-Our 0.663 is the average of:
-- **Susceptible** class F1 ≈ 0.84 (does well)
-- **Resistant** class F1 ≈ 0.49 (recall ≈ 0.59 — misses ~40% of resistant cases)
-
-**Verdict — moderate, not strong.** Against the 0.446 majority-class baseline it's a
-clear, meaningful improvement (+0.21) that proves the graph approach learns real signal.
-In absolute terms it's a respectable-but-not-stellar number: useful and clinically
-*suggestive*, but not a deployable classifier on its own. Antibiotic-resistance
-prediction is genuinely hard, and our Phase-1 analysis showed the signal is driven by
-*which organism and which antibiotic* — individual-patient context adds nothing — so
-~0.66 is likely close to the intrinsic ceiling of this task and data.
+Adding **patient-history predictors** (the personalized-antibiogram signal — a patient's
+own prior resistance results) lifted the local GNN from **macro-F1 0.66 / AUROC 0.77** to
+**macro-F1 0.71 / AUROC 0.84**, with resistant-case recall up from 0.58 to **0.69**. That
+AUROC is **at/above the published Stanford work on this same data lineage** (0.74–0.81).
+The earlier "0.66 is a hard ceiling" was only a ceiling for the *features we'd tried* — the
+literature's #1 predictor, which we'd skipped, broke it. Federation now has real headroom
+again; re-running Phase 3 on the stronger model is the next step.
 
 ---
 
-## The ceiling: why ~0.663 is the practical maximum
+## Model results
 
-- **Pooled** (one model on all data) = 0.663 is the natural upper reference for
-  federated learning: federation tries to *approach* it without sharing data.
-- Federation almost never *exceeds* pooling — pooling has strictly more information in
-  one place. (Model averaging can occasionally act like an ensemble and edge slightly
-  above pooled, but it's rare and small.)
-- So any aggregation method — including the topology-aware one — realistically tops out
-  at **≈ 0.663**, which also appears to be near the task's intrinsic ceiling.
+### Local GNN (all data, "pooled"), core vs + patient-history
 
-This is the crux: there is very little room between **"each hospital alone" (~0.63)** and
-**"best possible" (~0.66)** for a smarter aggregator to fill.
+| | Core (org/abx rates, demographics, ADI) | **+ Patient-history** |
+|---|---|---|
+| macro-F1 @0.5 | 0.660 | **0.707** |
+| macro-F1 @tuned threshold | 0.667 | **0.712** |
+| **AUROC** | 0.771 | **0.836** |
+| Resistant-class recall | 0.58 | **0.69** |
+| Resistant-class F1 | ~0.48 | **~0.56** |
+| Majority baseline | 0.446 | 0.446 |
 
----
+The +0.045 macro-F1 / +0.065 AUROC jump is far above run-to-run noise (±0.01). It's real
+signal, not leakage: the history features are **temporally strict** (each test sees only the
+patient's cultures *before* it — unit-tested), and AUROC landing at 0.84 (not ~0.95) is the
+tell-tale of genuine signal, exactly matching where the literature lands.
 
-## Results
-
-### Phase 1 — local model (all data, no federation)
-| | macro-F1 |
-|---|---|
-| Majority baseline | 0.446 |
-| **Local model (pooled)** | **0.663** |
-
-Exhaustively confirmed as a ceiling: 48-model grid (all feature combos × architectures)
-never beat ~0.66.
-
-### Phase 3 — FedAvg vs local-only, multi-seed α sweep (5 hospitals, 3 seeds each)
-
-| α (heterogeneity) | local-only | FedAvg **best** | FedAvg final | **gain** (best − local) |
-|---|---|---|---|---|
-| 0.1 (most different) | 0.624 ± 0.018 | 0.657 ± 0.005 | 0.638 ± 0.007 | **+0.033 ± 0.023** |
-| 0.5 | 0.624 ± 0.003 | 0.657 ± 0.008 | 0.631 ± 0.010 | **+0.032 ± 0.006** |
-| 1.0 (most alike) | 0.631 ± 0.008 | 0.661 ± 0.009 | 0.627 ± 0.006 | **+0.030 ± 0.015** |
-
-**Reading it:**
-1. FedAvg-best beats local-only by a steady **~+0.03** at every heterogeneity level.
-2. FedAvg-best (~0.66) lands **just under pooled (0.663)** — federation recovers most of
-   the go-it-alone gap without sharing data.
-3. The gain is **flat across α** — it does *not* grow when hospitals differ more. (An
-   earlier single-run result suggesting it did was noise; multi-seed averaging removed it.)
-4. A consistent **~0.02–0.03 end-of-training drift** (best → final) appears at all α.
+### What "macro-F1 0.71 / AUROC 0.84" means
+- **Macro-F1** averages the F1 of the *resistant* and *susceptible* classes equally, so the
+  model can't coast on the common class. 0.71 = a solid, balanced result (was "moderate" at
+  0.66; now genuinely good).
+- **AUROC 0.84** = probability the model ranks a random resistant case above a random
+  susceptible one. This is the metric the AMR literature reports, so it's our apples-to-apples
+  number — and 0.84 is **competitive with or better than** the personalized-antibiogram papers.
 
 ---
 
-## The decision point
+## The ceiling — revised
 
-The topology-aware aggregation (our planned novelty) weights hospitals by how *different*
-their graphs are. But the sweep shows the amount of difference (α) barely changes how much
-federation helps — so weighting by difference may not help much either, and FedAvg is
-already at the ceiling. **Headroom for a clear win is small.**
+- Old view: ~0.663 (pooled) was a hard ceiling; exhaustive feature/architecture sweeps
+  couldn't beat it. **True — but only for the feature families we had tried.**
+- New view: the patient's **own prior-resistance history** (untested until now) is the
+  literature's top predictor and lifted the pooled model to **~0.71 / AUROC 0.84.**
+- So the practical ceiling any federated method targets is now **~0.71**, not 0.66 — and
+  because prior-resistance is a strongly *per-patient, hospital-varying* signal, there is now
+  more for a topology-aware aggregator to exploit than the earlier analysis suggested.
 
-**Questions for the advisor:**
-1. Is a working KG + per-patient federated system on real AMR data, with an *honest
-   characterization* of when topology-aware aggregation helps, sufficient — or does the
-   thesis need a clear numerical win over FedAvg?
-2. Is it acceptable to **engineer a harder regime** (more & smaller hospitals, or a
-   specimen-based split) to give the topology-aware method room to matter?
-3. Would a **stability/robustness** framing (curbing FedAvg's end-of-training drift) count
-   as the contribution, rather than peak accuracy?
-4. Is a **nuanced/negative result** ("topology-aware gave marginal gains here, and here's
-   why") an acceptable capstone outcome?
+---
 
-**Cheap experiment that could open headroom (not yet run):** rerun with 15–20 smaller
-hospitals. Data-starving each hospital should lower local-only and widen the federation
-gain — giving the novelty room to matter. One-argument change (~15 min).
+## Federated results (Phase 3) — on the EARLIER 0.66 model, to be re-run
+
+Multi-seed α sweep, 5 hospitals, 3 seeds each (this predates the patient-history fix):
+
+| α | local-only | FedAvg best | gain (best − local) |
+|---|---|---|---|
+| 0.1 | 0.624 ± 0.018 | 0.657 ± 0.005 | +0.033 ± 0.023 |
+| 0.5 | 0.624 ± 0.003 | 0.657 ± 0.008 | +0.032 ± 0.006 |
+| 1.0 | 0.631 ± 0.008 | 0.661 ± 0.009 | +0.030 ± 0.015 |
+
+Findings **on that weaker model**: FedAvg beat local-only by a steady ~+0.03 (federation
+works), flat across heterogeneity, with a ~0.02–0.03 end-of-training drift. **These need
+re-running with patient-history features**, since the pooled ceiling has moved up and the
+per-patient signal may change the heterogeneity story.
+
+---
+
+## Features: what we use, what we're missing (with sources)
+
+The EHR-based AMR literature (esp. the Stanford/ARMD-lineage
+[Corbin et al. 2022](https://www.nature.com/articles/s43856-022-00094-8) and the
+[multitask antibiogram](https://academic.oup.com/cid/advance-article/doi/10.1093/cid/ciag027/8428387))
+consistently finds resistance is driven by **microbial identity + antibiotic-exposure history**,
+not demographics ([review](https://www.sciencedirect.com/science/article/pii/S2666991924000198),
+[ML-AMR feature study](https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0319460&type=printable)).
+
+| Feature | In literature? | Do we use it? |
+|---|---|---|
+| Organism / species identity | **Top signal** | ✅ (node) |
+| Prior resistance history | **#1 predictor (Corbin)** | ✅ (just added) |
+| Prior antibiotic prescriptions | **#2 predictor (Corbin)** | ⚠️ tried as an edge (flat); **not yet as temporal count/recency features** |
+| Specimen / culture source (urine/blood/resp) | Yes — resistance varies by source | ❌ **we have `culture_description`, not using it** (our EDA: urine 0.18 vs resp 0.29) |
+| Ordering mode (inpatient/OP/ER) | Yes (care setting) | ❌ have it, not used |
+| Demographics (age, gender) | Minimal influence | ✅ (patient node) — consistent with "didn't help" |
+| Comorbidities | Modest | ✅ tried (flat) |
+| Labs / vitals | Mixed | ✅ tried (flat) |
+| Healthcare exposure (prior hospitalization, nursing home, LOS, device days) | Known strong risk factors | ❌ **not readily in our 10 ARMD tables** |
+
+**Cheap wins we're not yet using (from data we already have):**
+1. **Specimen type** — strongest untapped signal; our own EDA shows big resistance differences by source.
+2. **Prior antibiotic prescriptions** as temporal features (count + recency) — the literature's #2 predictor.
+3. **Ordering mode** and **season/temporal** — minor, cheap.
+
+**Not available to us:** nursing-home status, prior-hospitalization/length-of-stay, device days —
+strong risk factors in the literature, but not exposed in the ARMD tables we use. Worth naming as a limitation.
+
+---
+
+## Where this leaves the project
+
+- **Local model: strong and literature-competitive** (0.71 / 0.84). Phase 1 is comfortably done.
+- **Federation headroom reopened** — Phase 3 should be re-run with patient-history features to
+  see whether the topology-aware novelty now has room to beat FedAvg.
+- **A couple of cheap, literature-backed features remain** (specimen type, prior prescriptions)
+  that may lift the number further.
+
+**Open questions for the advisor** are now much more favorable: the system works end-to-end, the
+local model matches published performance, and the contribution (topology-aware federated
+aggregation) has renewed headroom to demonstrate.
 
 ---
 
 *All numbers from the full ARMD dataset (Stanford), 2026-08-06. Code: branch
-`phase1-core-pipeline`; federated driver `notebooks/04_federated.ipynb`. Raw sweep log
-in `res.txt`.*
+`phase1-core-pipeline`; drivers `notebooks/03_train_local.ipynb` (local) and
+`04_federated.ipynb` (federated). Raw federated sweep log in `res.txt`.*
