@@ -23,7 +23,7 @@ from .. import config
 from ..data_loader import PK
 from ..graph_build import build_arrays, to_hetero_data
 from ..model import AMRSAGE
-from ..train_local import _macro_f1
+from ..train_local import _auroc, _macro_f1
 
 # Canonical core edge types — exactly what to_hetero_data emits for the 3 core edges
 # (including reverse edges). Pinned so every client's model has identical submodules.
@@ -48,9 +48,11 @@ def reset_fed_history() -> None:
     FED_HISTORY.write_text("")
 
 
-def append_fed_metric(macro_f1: float, per_client: dict | None = None) -> None:
+def append_fed_metric(macro_f1: float, per_client: dict | None = None,
+                      auroc: float | None = None, per_client_auroc: dict | None = None) -> None:
     with open(FED_HISTORY, "a") as f:
-        f.write(json.dumps({"macro_f1": macro_f1, "per_client": per_client or {}}) + "\n")
+        f.write(json.dumps({"macro_f1": macro_f1, "per_client": per_client or {},
+                            "auroc": auroc, "per_client_auroc": per_client_auroc or {}}) + "\n")
 
 
 def read_fed_history() -> list[float]:
@@ -181,7 +183,9 @@ def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float 
 
 
 @torch.no_grad()
-def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, int]:
+def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, float, int]:
+    """Returns (macro_f1, auroc, n) on the masked triples. AUROC is NaN if the masked
+    set is single-class (undefined)."""
     data = data.to(DEVICE)
     mask = getattr(data, mask_name).to(DEVICE)
     tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
@@ -190,9 +194,9 @@ def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, int]:
         tf = tf.to(DEVICE)
     model.eval()
     if int(mask.sum()) == 0:
-        return 0.0, 0
+        return 0.0, float("nan"), 0
     logits = model(data.x_dict, data.edge_index_dict, tri[:, mask],
                    tf[mask] if tf is not None else None)
-    result = _macro_f1(y[mask], logits), int(mask.sum())
+    result = _macro_f1(y[mask], logits), _auroc(y[mask], logits), int(mask.sum())
     free_gpu()
     return result

@@ -26,6 +26,16 @@ from .task import (
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
 
 
+def _wavg_finite(vals, weights) -> float:
+    """Weighted mean over finite entries (skips None / NaN); NaN if none are finite.
+    Used for AUROC, which is NaN for any single-class hospital."""
+    pairs = [(v, w) for v, w in zip(vals, weights) if v is not None and v == v]  # v==v: False for NaN
+    if not pairs:
+        return float("nan")
+    v, w = zip(*pairs)
+    return float(np.average(v, weights=w))
+
+
 def _run_config(n_clients: int, rounds: int, local_epochs: int) -> dict:
     # canonical Phase-1 architecture (best clean config from the grid)
     return {"n_clients": n_clients, "rounds": rounds, "local_epochs": local_epochs,
@@ -33,19 +43,21 @@ def _run_config(n_clients: int, rounds: int, local_epochs: int) -> dict:
 
 
 def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
-    """Train each hospital's model on its own data alone; eval on its own test set."""
-    f1s, ns = [], []
+    """Train each hospital's model on its own data alone; eval on its own test set.
+    Returns (f1_per_client, weighted_f1, auroc_per_client, weighted_auroc)."""
+    f1s, aucs, ns = [], [], []
     for c in range(n_clients):
         data = load_client_graph(c)
         model = init_model_on(data, cfg)
         local_train(model, data, epochs)
-        f1, n = local_eval(model, data, "test_mask")
+        f1, auc, n = local_eval(model, data, "test_mask")
         f1s.append(round(f1, 4))
+        aucs.append(round(auc, 4) if auc == auc else None)  # None for single-class client
         ns.append(n)
         del model, data
         free_gpu()   # release before the next (possibly huge) client's model
     wavg = float(np.average(f1s, weights=ns)) if sum(ns) else 0.0
-    return f1s, wavg
+    return f1s, wavg, aucs, _wavg_finite(aucs, ns)
 
 
 def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
@@ -91,15 +103,16 @@ def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
             free_gpu()
         opt.step()
 
-    f1s, ns = [], []
+    f1s, aucs, ns = [], [], []
     for c in range(n_clients):
-        f1, n = local_eval(model, graphs[c], "test_mask")
+        f1, auc, n = local_eval(model, graphs[c], "test_mask")
         f1s.append(round(f1, 4))
+        aucs.append(round(auc, 4) if auc == auc else None)
         ns.append(n)
         free_gpu()
     wavg = float(np.average(f1s, weights=ns)) if sum(ns) else 0.0
     worst = round(min(f1s), 4) if f1s else None
-    return f1s, wavg, worst
+    return f1s, wavg, aucs, _wavg_finite(aucs, ns), worst
 
 
 def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
@@ -126,16 +139,17 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")
 
-    lo_f1s, lo_avg = run_local_only(n_clients, cfg, epochs=local_only_epochs)
-    print(f"LOCAL-ONLY per-hospital macro-F1: {lo_f1s} | weighted avg = {lo_avg:.4f}")
+    lo_f1s, lo_avg, lo_aucs, lo_auc = run_local_only(n_clients, cfg, epochs=local_only_epochs)
+    print(f"LOCAL-ONLY per-hospital macro-F1: {lo_f1s} | weighted avg = {lo_avg:.4f} "
+          f"| AUROC = {lo_auc:.4f}")
 
     # pooled baseline, scored with the SAME per-hospital protocol (apples-to-apples)
     if compute_pooled:
-        pl_f1s, pl_avg, pl_worst = run_pooled(n_clients, cfg, epochs=local_only_epochs)
+        pl_f1s, pl_avg, pl_aucs, pl_auc, pl_worst = run_pooled(n_clients, cfg, epochs=local_only_epochs)
         print(f"POOLED (centralized, same protocol): {pl_f1s} | weighted avg = {pl_avg:.4f} "
-              f"| worst = {pl_worst}")
+              f"| AUROC = {pl_auc:.4f} | worst = {pl_worst}")
     else:
-        pl_f1s, pl_avg, pl_worst = None, POOLED_REFERENCE, None
+        pl_f1s, pl_avg, pl_aucs, pl_auc, pl_worst = None, POOLED_REFERENCE, None, float("nan"), None
 
     ngpu = (0.9 / n_clients) if DEVICE == "cuda" else 0.0
     reset_fed_history()
@@ -148,19 +162,26 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     )
     records = read_fed_records()
     fed = [r["macro_f1"] for r in records]
+    fed_auc = [r.get("auroc") for r in records]
     print("FEDAVG macro-F1 by round:", [round(v, 4) for v in fed])
-    best_idx = max(range(len(fed)), key=fed.__getitem__) if fed else None
-    fed_best = round(fed[best_idx], 4) if fed else None  # best round (FedAvg drifts on non-IID)
+    print("FEDAVG AUROC by round:   ", [round(v, 4) if v is not None and v == v else None for v in fed_auc])
+    best_idx = max(range(len(fed)), key=fed.__getitem__) if fed else None  # best round by macro-F1
+    fed_best = round(fed[best_idx], 4) if fed else None  # (FedAvg drifts on non-IID)
     fed_final = round(fed[-1], 4) if fed else None
-    # per-hospital FedAvg F1 at the best round (global model, each client's own test set)
+    fed_auc_best = (round(fed_auc[best_idx], 4)
+                    if fed and fed_auc[best_idx] is not None and fed_auc[best_idx] == fed_auc[best_idx]
+                    else None)
+    # per-hospital FedAvg F1/AUROC at the best round (global model, each client's own test set)
     fed_pc = records[best_idx].get("per_client", {}) if fed else {}
+    fed_pc_auc = records[best_idx].get("per_client_auroc", {}) if fed else {}
     fed_f1s = [fed_pc.get(str(c)) for c in range(n_clients)]
+    fed_aucs = [fed_pc_auc.get(str(c)) for c in range(n_clients)]
 
     pooled_str = f"{pl_avg:.4f}" + ("" if pl_worst is None else f" (worst {pl_worst})")
-    print(f"\n=== Phase 3 comparison ({tag}) ===")
-    print(f"  pooled (centralized, same protocol): {pooled_str}")
-    print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final}")
-    print(f"  local-only (alone, weighted)   : {lo_avg:.4f}")
+    print(f"\n=== Phase 3 comparison ({tag}) ===  [macro-F1 | AUROC]")
+    print(f"  pooled (centralized, same protocol): {pooled_str} | AUROC {pl_auc:.4f}")
+    print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final} | AUROC {fed_auc_best}")
+    print(f"  local-only (alone, weighted)   : {lo_avg:.4f} | AUROC {lo_auc:.4f}")
     if fed_best is not None:
         print(f"  => FedAvg (best) {'BEATS' if fed_best > lo_avg else 'does NOT beat'} local-only; "
               f"{'MATCHES/beats' if fed_best >= pl_avg else 'below'} pooled")
@@ -182,7 +203,10 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "fedavg_final": fed_final, "local_only": lo_avg,
             "local_only_per_client": lo_f1s, "fedavg_per_client": fed_f1s,
             "worst_local": worst_local, "worst_fed": worst_fed,
-            "sizes": sizes, "fed_by_round": fed}
+            "sizes": sizes, "fed_by_round": fed,
+            # AUROC (weighted, NaN-safe): threshold-free, literature-comparable
+            "pooled_auroc": pl_auc, "local_only_auroc": lo_auc, "fedavg_auroc_best": fed_auc_best,
+            "fedavg_auroc_per_client": fed_aucs, "fedavg_auroc_by_round": fed_auc}
 
 
 def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
@@ -205,7 +229,7 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                compute_pooled=compute_pooled))
 
     def ms(key):
-        vals = [r[key] for r in runs if r.get(key) is not None]
+        vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN
         if not vals:
             return None, None
         return round(float(np.mean(vals)), 4), round(float(np.std(vals)), 4)
@@ -215,6 +239,7 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     lo, fb, ff = ms("local_only"), ms("fedavg_best"), ms("fedavg_final")
     pl, plw = ms("pooled"), ms("pooled_worst")    # centralized, same protocol
     wl, wf = ms("worst_local"), ms("worst_fed")   # worst-hospital (fairness) metric
+    pla, loa, fba = ms("pooled_auroc"), ms("local_only_auroc"), ms("fedavg_auroc_best")  # AUROC
     gmean, gstd = round(float(np.mean(gains)), 4), round(float(np.std(gains)), 4)
     worst_gains = [r["worst_fed"] - r["worst_local"] for r in runs
                    if r.get("worst_fed") is not None]
@@ -231,7 +256,13 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     print(f"  worst-hosp local       : {wl[0]} +/- {wl[1]}")
     print(f"  worst-hosp FedAvg      : {wf[0]} +/- {wf[1]}")
     print(f"  worst-hosp gain        : {wgmean} +/- {wgstd}")
+    print(f"  --- AUROC (weighted) ---")
+    print(f"  pooled AUROC           : {pla[0]} +/- {pla[1]}")
+    print(f"  local-only AUROC       : {loa[0]} +/- {loa[1]}")
+    print(f"  FedAvg (best) AUROC    : {fba[0]} +/- {fba[1]}")
     return {"alpha": alpha, "seeds": list(seeds), "pooled": pl, "pooled_worst": plw,
             "local_only": lo, "fedavg_best": fb, "fedavg_final": ff,
             "gain_mean": gmean, "gain_std": gstd, "worst_local": wl, "worst_fed": wf,
-            "worst_gain_mean": wgmean, "worst_gain_std": wgstd, "runs": runs}
+            "worst_gain_mean": wgmean, "worst_gain_std": wgstd,
+            "pooled_auroc": pla, "local_only_auroc": loa, "fedavg_auroc_best": fba,
+            "runs": runs}

@@ -25,6 +25,15 @@ def _macro_f1(y_true: torch.Tensor, logits: torch.Tensor) -> float:
     return f1_score(y_true.cpu().numpy(), pred, average="macro")
 
 
+def _auroc(y_true: torch.Tensor, logits: torch.Tensor) -> float:
+    """Threshold-free AUROC (the metric the AMR literature reports). NaN when a client's
+    test set is single-class (AUROC undefined) — callers weight over the finite ones."""
+    y = y_true.cpu().numpy()
+    if len(np.unique(y)) < 2:
+        return float("nan")
+    return float(roc_auc_score(y, torch.sigmoid(logits).cpu().numpy()))
+
+
 def _f1_at(y_np, p_np, thr):
     return f1_score(y_np, (p_np >= thr).astype(int), average="macro")
 

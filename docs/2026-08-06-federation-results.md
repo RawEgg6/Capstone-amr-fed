@@ -132,6 +132,11 @@ memory-safe — one graph on GPU at a time, gradients accumulated) and scores it
 FedAvg or slightly above; the correct claim is *"federated matches centralized without sharing
 data,"* not "beats." Re-run to populate the matched numbers.
 
+**AUROC now reported too (2026-08-07).** Every run prints a weighted **AUROC** (threshold-free, and
+the metric the AMR literature reports — our pooled AUROC ≈ 0.84) alongside macro-F1, for pooled /
+local-only / FedAvg (per round + per hospital). AUROC is more robust than F1 (no 0.5-threshold
+dependence) and is NaN-safe: single-class hospitals are skipped in the weighted average.
+
 *Why cross-silo FedAvg can sit at/above centralized (literature):* averaging separately-trained
 models acts like an ensemble/regularizer ([non-IID regularization > centralized on 3 healthcare
 datasets, PMC 2025](https://pmc.ncbi.nlm.nih.gov/articles/PMC12290147/); [decentralized FL

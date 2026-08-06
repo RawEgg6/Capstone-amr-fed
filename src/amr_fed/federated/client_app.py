@@ -29,8 +29,9 @@ class FlowerClient(NumPyClient):
 
     def evaluate(self, parameters, config):
         set_weights(self.model, parameters)
-        f1, n = local_eval(self.model, self.data, "test_mask")
-        return 0.0, n, {"macro_f1": f1, "cid": self.cid}   # cid -> per-hospital breakdown
+        f1, auc, n = local_eval(self.model, self.data, "test_mask")
+        # cid -> per-hospital breakdown; auroc alongside macro_f1
+        return 0.0, n, {"macro_f1": f1, "auroc": auc, "cid": self.cid}
 
 
 def client_fn(context: Context):
