@@ -24,6 +24,7 @@ from .data_loader import ADI, PK
 WARD_COL = "ward"  # priority-collapsed per-culture ward added by data_loader
 LABEL = "label"    # binary target column (Resistant/Intermediate=1 vs Susceptible=0)
 CDESC = config.COLUMNS["culture_description"]
+ORG = config.COLUMNS["organism"]
 _SPECIMEN_VOCAB = ["URINE", "RESPIRATORY", "BLOOD"]  # mirror graph_build._SPECIMEN_VOCAB
 
 
@@ -111,6 +112,29 @@ def specimen_baseline(df: pd.DataFrame) -> pd.Series:
     return d.groupby(PK)["spec"].agg(lambda x: x.mode().iloc[0])
 
 
+def organism_community(df: pd.DataFrame, n_clients: int = 5,
+                       seed: int = config.SEED) -> pd.Series:
+    """Structural split (option #4): group organisms into n_clients DISJOINT 'hospitals'
+    so each sees a different set of bugs — the maximal topological heterogeneity a
+    topology-aware aggregator is built to exploit (the FGL community-split idea; OpenFGL
+    2024). Each patient -> the bucket holding their dominant (most-frequent) organism.
+
+    Organisms are greedily packed smallest-bucket-first (largest organisms first) so
+    hospital sizes stay balanced — avoids the degenerate 1-patient clients that broke the
+    low-beta label-Dirichlet split. `seed` is unused (greedy is deterministic); kept for a
+    uniform partition_fn(df, seed) signature. Returns Series index=patient -> client id."""
+    d = pd.DataFrame({PK: df[PK].to_numpy(), "org": df[ORG].astype(str).to_numpy()})
+    home_org = d.groupby(PK)["org"].agg(lambda x: x.mode().iloc[0])  # dominant organism/patient
+    counts = home_org.value_counts()  # patients per organism, largest first
+    loads = np.zeros(n_clients)
+    org_to_client = {}
+    for org, cnt in counts.items():
+        c = int(np.argmin(loads))     # put this organism in the currently-emptiest hospital
+        org_to_client[org] = c
+        loads[c] += cnt
+    return home_org.map(org_to_client)
+
+
 def ward_baseline(df: pd.DataFrame) -> pd.Series:
     """Baseline split: each home ward is its own hospital (patient -> ward)."""
     return assign_home_ward(df)
@@ -178,6 +202,12 @@ def _self_check() -> None:
     print("\n=== specimen natural split ===")
     g, niid_spec = partition_summary(df, specimen_baseline(df))
     print(g.to_string()); print("non-IID(wstd):", round(niid_spec, 4))
+
+    print("\n=== organism-community split (5 hospitals, disjoint bug sets) ===")
+    org = organism_community(df, n_clients=5)
+    g, niid_org = partition_summary(df, org)
+    print(g.to_string()); print("non-IID(wstd):", round(niid_org, 4))
+    assert org.index.is_unique and len(org) == n_pat, "organism split: 1:1 patient assignment"
 
     # the dial must work: smaller alpha -> more heterogeneity
     s = sweep.sort_values("alpha")

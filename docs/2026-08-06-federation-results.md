@@ -212,9 +212,11 @@ as the reported *baseline*, and **evaluate the topology-aware method on the SPEC
 and worst-hospital gain (+0.023 ± 0.007), and it's clinically defensible. **Drop label-Dirichlet
 (option 1)** as an evaluation setting — it either did nothing (β=0.5) or went degenerate (β=0.1);
 report it only as a *negative result* explaining why label-prior skew is the wrong lever for a
-feature-driven decoder. Report **worst-hospital F1** as the headline metric. **Build option 4 next
-(organism-community split)** — it's the strongest tie to the "topology-aware" thesis and should
-give even more structural heterogeneity than specimen.
+feature-driven decoder. Report **worst-hospital F1** as the headline metric. **Option 4
+(organism-community split) is now built** (`partition.organism_community`, notebook cell 8) — each
+hospital sees a disjoint set of bugs (organisms greedily packed into 5 balanced hospitals, so no
+degenerate tiny clients). It's the strongest tie to the "topology-aware" thesis and should give
+even more structural heterogeneity than specimen; run it to confirm.
 
 ---
 
