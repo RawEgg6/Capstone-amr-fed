@@ -91,6 +91,41 @@ clients are near-IID in the dimension FedAvg actually struggles with.
 2. **Change the split** so clients are genuinely non-IID in *label* and *graph topology*, not just
    ward mixture — see the next section.
 
+### Update (2026-08-07): tried label-Dirichlet (#1) and specimen (#3) — specimen wins
+
+Ran both alternative splits, 3 seeds each, same strong model:
+
+| Split | local-only | FedAvg best | gain (best − local) | worst-hosp local → FedAvg | FedAvg > local |
+|---|---|---|---|---|---|
+| ward α=0.5 (baseline) | 0.688 ± 0.007 | 0.701 ± 0.002 | +0.012 ± 0.009 | ~0.671 → — | 3/3 |
+| label-dir β=0.1 | 0.678 ± 0.024 | 0.601 ± 0.112 | **−0.077 ± 0.128** | 0.493 → 0.516 | 1/3 |
+| label-dir β=0.5 | 0.687 ± 0.013 | 0.690 ± 0.006 | +0.003 ± 0.006 | 0.627 → 0.625 | 1/3 |
+| **specimen (urine/resp/blood)** | **0.696 ± 0.002** | **0.715 ± 0.001** | **+0.019 ± 0.004** | **0.679 → 0.702 (+0.023 ± 0.007)** | **3/3** |
+
+**Specimen is the clean win — and the result we build Phase 5 on.** FedAvg beats local-only in all
+3 seeds, the gain **+0.019 ± 0.004 does not overlap zero** (unlike every ward-split gain), the
+worst hospital (urine, n≈52k, the hardest at 0.68) gains **+0.023 ± 0.007**, and FedAvg-best 0.715
+matches/edges the pooled 0.71 ceiling. It works because specimen source induces **topological +
+feature heterogeneity** (urine vs blood vs respiratory cultures involve different organisms and
+antibiotics → structurally different subgraphs), which is exactly what a topology-aware aggregator
+keys on — and it's the most clinically defensible split.
+
+**Label-Dirichlet on resistant-rate was a dead end — an informative negative result.**
+- β=0.5: gain ≈ 0 (+0.003), FedAvg beat local in only 1/3 seeds. Skewing the *label prior* barely
+  moved the gap.
+- β=0.1: degenerate. Dirichlet(0.1) produced pathological hospitals (one seed had a **1-patient**
+  client and only 4 non-empty clients); FedAvg collapsed toward the majority baseline (0.44) on that
+  seed, giving a meaningless −0.077 ± 0.128.
+- **Why:** our decoder is driven by strong *per-test features* (patient-history, organism/antibiotic
+  identity), so it learns the feature→resistance mapping regardless of a hospital's class balance.
+  Label-prior skew is what hurts models that lean on class priors; ours doesn't. Label skew alone is
+  therefore the wrong lever for this task — **structural/topological heterogeneity (specimen,
+  organism) is the right one.** Worth stating explicitly in the thesis: it shows we understand *why*
+  the split matters, not just *that* it does.
+
+*Caveat logged:* `label_dirichlet` can emit empty/near-empty clients at very low β (no
+minimum-size guard). We're not using it, so left as-is; add a size floor if it's ever revived.
+
 ---
 
 ## Features: what we use, what we're missing (with sources)
@@ -171,12 +206,15 @@ An Experimental Study" (ICDE 2022) / NIID-Bench](https://github.com/Xtra-Computi
    sees a different bug mix → different tested/grew edges) creates exactly the topological
    heterogeneity a topology-aware aggregator is designed to exploit, and it moves label rates too.
 
-**Recommendation:** keep the ward-mixture α-sweep as the reported *baseline* (it's a legitimate
-feature/quantity split and shows FedAvg ≈ pooled), but **add a label-Dirichlet split on
-resistant-rate (option 1) and a specimen-source natural split (option 3)** as the settings where
-the topology-aware method is evaluated. Report **worst-hospital F1** as the headline. Option 4
-(organism-community split) is the strongest tie to the "topology-aware" thesis if we want one
-partition that is heterogeneous in structure *and* label.
+**Recommendation (revised after the 2026-08-07 experiment above):** keep the ward-mixture α-sweep
+as the reported *baseline*, and **evaluate the topology-aware method on the SPECIMEN split (option
+3)** — it's the only alternative that produced a clean, significant FedAvg gain (+0.019 ± 0.004)
+and worst-hospital gain (+0.023 ± 0.007), and it's clinically defensible. **Drop label-Dirichlet
+(option 1)** as an evaluation setting — it either did nothing (β=0.5) or went degenerate (β=0.1);
+report it only as a *negative result* explaining why label-prior skew is the wrong lever for a
+feature-driven decoder. Report **worst-hospital F1** as the headline metric. **Build option 4 next
+(organism-community split)** — it's the strongest tie to the "topology-aware" thesis and should
+give even more structural heterogeneity than specimen.
 
 ---
 
