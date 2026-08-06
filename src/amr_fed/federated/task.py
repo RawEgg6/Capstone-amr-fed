@@ -48,15 +48,23 @@ def reset_fed_history() -> None:
     FED_HISTORY.write_text("")
 
 
-def append_fed_metric(macro_f1: float) -> None:
+def append_fed_metric(macro_f1: float, per_client: dict | None = None) -> None:
     with open(FED_HISTORY, "a") as f:
-        f.write(json.dumps({"macro_f1": macro_f1}) + "\n")
+        f.write(json.dumps({"macro_f1": macro_f1, "per_client": per_client or {}}) + "\n")
 
 
 def read_fed_history() -> list[float]:
     if not FED_HISTORY.exists():
         return []
     return [json.loads(x)["macro_f1"] for x in FED_HISTORY.read_text().splitlines() if x.strip()]
+
+
+def read_fed_records() -> list[dict]:
+    """Full per-round records ({'macro_f1', 'per_client': {cid: f1}}) — for the
+    per-hospital / worst-client breakdown at the best round."""
+    if not FED_HISTORY.exists():
+        return []
+    return [json.loads(x) for x in FED_HISTORY.read_text().splitlines() if x.strip()]
 
 
 # ---- disk hand-off (Ray clients are separate processes) --------------------

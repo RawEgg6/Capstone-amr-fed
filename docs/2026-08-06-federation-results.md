@@ -57,20 +57,39 @@ tell-tale of genuine signal, exactly matching where the literature lands.
 
 ---
 
-## Federated results (Phase 3) — on the EARLIER 0.66 model, to be re-run
+## Federated results (Phase 3) — on the strong patient-history model
 
-Multi-seed α sweep, 5 hospitals, 3 seeds each (this predates the patient-history fix):
+Multi-seed α sweep, 5 hospitals (Dirichlet **ward**-mixture), 3 seeds each, patient-history
+features on all clients (`phase3-federated` branch, pooled ceiling = 0.71):
 
-| α | local-only | FedAvg best | gain (best − local) |
-|---|---|---|---|
-| 0.1 | 0.624 ± 0.018 | 0.657 ± 0.005 | +0.033 ± 0.023 |
-| 0.5 | 0.624 ± 0.003 | 0.657 ± 0.008 | +0.032 ± 0.006 |
-| 1.0 | 0.631 ± 0.008 | 0.661 ± 0.009 | +0.030 ± 0.015 |
+| α | local-only | FedAvg best | gain (best − local) | worst-hospital (local) |
+|---|---|---|---|---|
+| 0.1 | 0.6974 ± 0.0025 | 0.7036 ± 0.0029 | **+0.006 ± 0.005** | ~0.685 |
+| 0.5 | 0.6883 ± 0.007  | 0.7007 ± 0.0023 | **+0.012 ± 0.009** | ~0.671 |
+| 1.0 | 0.6913 ± 0.0058 | 0.7000 ± 0.0084 | **+0.009 ± 0.011** | ~0.670 |
 
-Findings **on that weaker model**: FedAvg beat local-only by a steady ~+0.03 (federation
-works), flat across heterogeneity, with a ~0.02–0.03 end-of-training drift. **These need
-re-running with patient-history features**, since the pooled ceiling has moved up and the
-per-patient signal may change the heterogeneity story.
+**What's solid:** FedAvg beat local-only in **all 9 runs** (every α × seed) — a sign test at
+p ≈ 0.002, so *federation reliably helps*. FedAvg lands at ~0.70 vs the 0.71 pooled ceiling, so
+it recovers ~99% of centralized accuracy **without hospitals sharing patient data**. That is the
+clean Phase-3 baseline result.
+
+**The honest problem for the novelty:** the *magnitude* is small and noisy — every gain's error
+bar overlaps zero (e.g. α=1.0: one seed +0.025, two seeds ~0.001). More fundamentally, **the whole
+spread is tiny: local 0.69 → FedAvg 0.70 → pooled 0.71 — about two points total**, and FedAvg
+already eats most of it. That leaves a topology-aware aggregator only ~1 point of headroom above
+FedAvg (up to the pooled ceiling). The textbook "smarter aggregation helps most when clients differ
+most" is **not** visible here: the gain does not grow as α shrinks, because a **ward**-mixture
+split barely changes each hospital's *label* distribution (resistant/susceptible rate) — so the
+clients are near-IID in the dimension FedAvg actually struggles with.
+
+**Two responses (both now wired into the run output):**
+1. **Report worst-hospital F1, not just the weighted mean.** The mean (~0.69) hides the struggling
+   sites (worst hospital ~0.65–0.68). FedAvg's real value is lifting the *underserved* clients —
+   the axis a topology-aware method should beat plain FedAvg on. This is likely the **headline
+   metric**, not mean F1. (Per-hospital `local → FedAvg` deltas + worst-client now print every run;
+   FedAvg-per-client requires the next re-run since the earlier run only logged the aggregate.)
+2. **Change the split** so clients are genuinely non-IID in *label* and *graph topology*, not just
+   ward mixture — see the next section.
 
 ---
 
@@ -105,6 +124,62 @@ strong risk factors in the literature, but not exposed in the ARMD tables we use
 
 ---
 
+## Partition strategies — how to widen the FedAvg-vs-local gap (with sources)
+
+The gap is small because **how we split hospitals doesn't create the kind of non-IID that
+federation actually struggles with.** The FL benchmarking literature is explicit that the
+accuracy gap is driven mostly by **label-distribution skew**, less by feature/quantity skew.
+Our current split (Dirichlet over *wards*) is closest to a feature/quantity split, so it leaves
+each hospital's resistant/susceptible balance roughly IID — hence the flat, tiny gain.
+
+**The canonical taxonomy** — [Li, Diao, Chen & He, "Federated Learning on Non-IID Data Silos:
+An Experimental Study" (ICDE 2022) / NIID-Bench](https://github.com/Xtra-Computing/NIID-Bench)
+([paper](https://arxiv.org/pdf/2102.02079)) defines six partition schemes in three families:
+
+| Family | Scheme | What it skews | Fit for us |
+|---|---|---|---|
+| **Label skew** | `noniid-#label-k` (each client sees only k classes) | class balance — extreme | too extreme for binary R/S |
+| **Label skew** | `noniid-labeldir` (Dirichlet over the *label*, param β) | class balance — tunable | **best lever: split on resistant-rate** |
+| **Quantity skew** | `iid-diff-quantity` (Dirichlet over sample *counts*) | data volume per client | the "more/smaller hospitals" idea |
+| **Feature skew** | noise-based / real-feature | covariate shift | ≈ what our ward-mixture does now |
+| **Homogeneous** | `homo` (IID) | nothing | control baseline |
+| **Real** | natural attribute in the data | all of the above, realistically | **most defensible for a clinical story** |
+
+**Concretely, the options we have (ranked for this project):**
+
+1. **Label-Dirichlet split (`noniid-labeldir`, β).** Partition so hospitals differ in their
+   **resistant-vs-susceptible rate** (or in the organism–antibiotic pairs that carry the label),
+   not in ward mix. Small β → strong skew. This is the single highest-leverage change: the
+   literature shows FedAvg accuracy can fall tens of points under label-Dir where it barely moves
+   under feature skew ([Hsu, Qi & Brown 2019](https://arxiv.org/abs/1909.06335), the origin of the
+   α/β-Dirichlet protocol; [Li 2022](https://arxiv.org/pdf/2102.02079)). Widening local↔FedAvg
+   widens the room for a topology-aware method.
+2. **More, smaller hospitals (quantity skew).** Go from 5 to 10–20 clients so each has less data;
+   local-only degrades and aggregation matters more. Cheap — just bump `n_clients`. Best combined
+   with (1), not alone (alone it mostly adds variance).
+3. **Natural / real split.** Partition by a real attribute already in ARMD — **specimen source**
+   (urine/blood/resp; our EDA: urine 0.18 vs resp 0.29 resistant → real label skew *and* different
+   subgraph shapes), **ordering mode** (inpatient/ER/OP), or **ADI** (already have the baseline).
+   This is the most clinically defensible framing and the way healthcare-FL benchmarks argue splits
+   should be done ([FLamby, du Terrail et al. 2022](https://arxiv.org/abs/2210.04620), which shows
+   synthetic Dirichlet splits are unrealistic and ships *natural* hospital splits).
+4. **Graph-topology split (most aligned with our novelty).** Federated *graph* learning simulates
+   clients with **community/structure partitioning (Metis / Louvain)** so subgraphs are
+   structurally divergent — the two heterogeneity axes named are *statistical* (label) and
+   *topological* (structure) ([OpenFGL benchmark 2024](https://arxiv.org/html/2408.16288v1);
+   [FedGraphNN](https://arxiv.org/abs/2104.07145)). Splitting by **organism family** (each hospital
+   sees a different bug mix → different tested/grew edges) creates exactly the topological
+   heterogeneity a topology-aware aggregator is designed to exploit, and it moves label rates too.
+
+**Recommendation:** keep the ward-mixture α-sweep as the reported *baseline* (it's a legitimate
+feature/quantity split and shows FedAvg ≈ pooled), but **add a label-Dirichlet split on
+resistant-rate (option 1) and a specimen-source natural split (option 3)** as the settings where
+the topology-aware method is evaluated. Report **worst-hospital F1** as the headline. Option 4
+(organism-community split) is the strongest tie to the "topology-aware" thesis if we want one
+partition that is heterogeneous in structure *and* label.
+
+---
+
 ## Where this leaves the project
 
 - **Local model: strong and literature-competitive** (0.71 / 0.84). Phase 1 is comfortably done.
@@ -119,6 +194,7 @@ aggregation) has renewed headroom to demonstrate.
 
 ---
 
-*All numbers from the full ARMD dataset (Stanford), 2026-08-06. Code: branch
-`phase1-core-pipeline`; drivers `notebooks/03_train_local.ipynb` (local) and
-`04_federated.ipynb` (federated). Raw federated sweep log in `res.txt`.*
+*All numbers from the full ARMD dataset (Stanford), 2026-08-06. Local model on branch
+`phase1-core-pipeline` (merged to `main`); federated Phase-3 code + strong-model sweep on branch
+`phase3-federated`. Drivers `notebooks/03_train_local.ipynb` (local) and `04_federated.ipynb`
+(federated). Raw federated sweep log in `res.txt`.*

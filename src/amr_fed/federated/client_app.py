@@ -16,9 +16,10 @@ from .task import (
 
 
 class FlowerClient(NumPyClient):
-    def __init__(self, data, cfg: dict):
+    def __init__(self, data, cfg: dict, cid: int):
         self.data = data
         self.cfg = cfg
+        self.cid = cid
         self.model = init_model_on(data, cfg)   # materialises lazy params
 
     def fit(self, parameters, config):
@@ -29,13 +30,13 @@ class FlowerClient(NumPyClient):
     def evaluate(self, parameters, config):
         set_weights(self.model, parameters)
         f1, n = local_eval(self.model, self.data, "test_mask")
-        return 0.0, n, {"macro_f1": f1}
+        return 0.0, n, {"macro_f1": f1, "cid": self.cid}   # cid -> per-hospital breakdown
 
 
 def client_fn(context: Context):
     cfg = read_run_config()
     pid = int(context.node_config["partition-id"])
-    return FlowerClient(load_client_graph(pid), cfg).to_client()
+    return FlowerClient(load_client_graph(pid), cfg, pid).to_client()
 
 
 app = ClientApp(client_fn=client_fn)

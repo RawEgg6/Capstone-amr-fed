@@ -22,6 +22,9 @@ from . import config
 from .data_loader import ADI, PK
 
 WARD_COL = "ward"  # priority-collapsed per-culture ward added by data_loader
+LABEL = "label"    # binary target column (Resistant/Intermediate=1 vs Susceptible=0)
+CDESC = config.COLUMNS["culture_description"]
+_SPECIMEN_VOCAB = ["URINE", "RESPIRATORY", "BLOOD"]  # mirror graph_build._SPECIMEN_VOCAB
 
 
 def assign_home_ward(df: pd.DataFrame) -> pd.Series:
@@ -51,7 +54,7 @@ def dirichlet_ward_mixture(df: pd.DataFrame, n_clients: int = 5, alpha: float = 
     rng = np.random.default_rng(seed)
     assignment = pd.Series(-1, index=home.index, dtype="int64")
     for ward in sorted(home.unique()):
-        pats = home.index[home == ward].to_numpy()
+        pats = home.index[home == ward].to_numpy(copy=True)  # writable for shuffle
         rng.shuffle(pats)
         counts = _apportion(len(pats), rng.dirichlet(alpha * np.ones(n_clients)))
         start = 0
@@ -60,6 +63,52 @@ def dirichlet_ward_mixture(df: pd.DataFrame, n_clients: int = 5, alpha: float = 
             start += k
     assert (assignment >= 0).all(), "some patient was left unassigned"
     return assignment
+
+
+def label_dirichlet(df: pd.DataFrame, n_clients: int = 5, beta: float = 0.5,
+                    n_bins: int = 3, seed: int = config.SEED) -> pd.Series:
+    """noniid-labeldir split (Li et al. 2022; Hsu et al. 2019): partition PATIENTS so
+    hospitals differ in their *resistant-rate* mix — the label-distribution skew that
+    actually widens the FedAvg-vs-local gap (a ward/feature split barely does).
+
+    Each patient is summarised by their resistant fraction, binned into n_bins strata;
+    each stratum is split across clients via Dirichlet(beta). Small beta => strong skew.
+    Returns Series index=patient -> client id (0..n_clients-1)."""
+    rng = np.random.default_rng(seed)
+    rate = df.groupby(PK)[LABEL].mean()  # per-patient fraction of tests that are resistant
+    # rank-based bins so heavy rate ties (e.g. patients with one all-S culture) don't
+    # collapse the quantile edges; the extremes still separate into top/bottom strata.
+    strata = pd.qcut(rate.rank(method="first"), n_bins, labels=False)
+    assignment = pd.Series(-1, index=rate.index, dtype="int64")
+    for s in range(n_bins):
+        pats = rate.index[strata == s].to_numpy(copy=True)  # writable for shuffle
+        rng.shuffle(pats)
+        counts = _apportion(len(pats), rng.dirichlet(beta * np.ones(n_clients)))
+        start = 0
+        for c, k in enumerate(counts):
+            assignment.loc[pats[start:start + k]] = c
+            start += k
+    assert (assignment >= 0).all(), "some patient was left unassigned"
+    return assignment
+
+
+def _specimen_category(s: pd.Series) -> pd.Series:
+    """Map raw culture_description to {URINE,RESPIRATORY,BLOOD,OTHER} (matches graph_build)."""
+    cd = s.astype(str).str.upper()
+    cat = pd.Series("OTHER", index=cd.index, dtype="object")
+    for v in _SPECIMEN_VOCAB:
+        cat[cd == v] = v
+    return cat
+
+
+def specimen_baseline(df: pd.DataFrame) -> pd.Series:
+    """Natural split: one hospital per specimen source (urine/respiratory/blood[/other]).
+    Each patient -> their modal specimen across cultures. Resistance varies strongly by
+    source (EDA: urine ~0.18 vs resp ~0.29), so this is a real label + topology skew and
+    the most clinically defensible partition. Returns Series index=patient -> specimen str."""
+    d = pd.DataFrame({PK: df[PK].to_numpy(), "spec": _specimen_category(df[CDESC]).to_numpy()})
+    # modal specimen per patient; ties -> alphabetical first (deterministic)
+    return d.groupby(PK)["spec"].agg(lambda x: x.mode().iloc[0])
 
 
 def ward_baseline(df: pd.DataFrame) -> pd.Series:
@@ -122,10 +171,22 @@ def _self_check() -> None:
     sweep = alpha_sweep(df)
     print(sweep.to_string(index=False))
 
+    print("\n=== label-Dirichlet split (resistant-rate skew, 5 hospitals) ===")
+    g, niid_lab = partition_summary(df, label_dirichlet(df, n_clients=5, beta=0.5))
+    print(g.to_string()); print("non-IID(wstd):", round(niid_lab, 4))
+
+    print("\n=== specimen natural split ===")
+    g, niid_spec = partition_summary(df, specimen_baseline(df))
+    print(g.to_string()); print("non-IID(wstd):", round(niid_spec, 4))
+
     # the dial must work: smaller alpha -> more heterogeneity
     s = sweep.sort_values("alpha")
     assert s["non_iid_wstd"].iloc[0] > s["non_iid_wstd"].iloc[-1], \
         "non-IID should shrink as alpha grows — the Dirichlet dial isn't working"
+    # the whole point: a label-skew split must be MORE non-IID than the ward mixture
+    ward_niid = float(s["non_iid_wstd"].iloc[-1])  # alpha=1.0 (mildest ward split)
+    assert niid_lab > ward_niid, \
+        "label-Dirichlet should be more non-IID than the ward mixture — that's its purpose"
     # no leakage: every patient assigned exactly once
     assign = dirichlet_ward_mixture(df, 5, 0.5)
     assert assign.index.is_unique and len(assign) == n_pat, "patient assignment not 1:1"

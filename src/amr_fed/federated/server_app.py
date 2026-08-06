@@ -18,11 +18,13 @@ from .task import (
 
 
 def _weighted_macro_f1(metrics: list) -> dict:
-    """metrics: list of (num_examples, {"macro_f1": ...}) -> test-weighted mean.
-    Also appends the round's value to the history file (run_simulation returns None)."""
+    """metrics: list of (num_examples, {"macro_f1": ..., "cid": ...}) -> test-weighted
+    mean. Appends the round's aggregate AND per-hospital F1 to the history file
+    (run_simulation returns None), so run.py can report the worst-client gap."""
     total = sum(n for n, _ in metrics)
     f1 = sum(n * m["macro_f1"] for n, m in metrics) / total if total else 0.0
-    append_fed_metric(f1)
+    per_client = {str(m.get("cid", i)): round(m["macro_f1"], 4) for i, (_, m) in enumerate(metrics)}
+    append_fed_metric(f1, per_client)
     return {"macro_f1": f1}
 
 
