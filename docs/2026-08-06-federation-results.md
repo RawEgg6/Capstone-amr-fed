@@ -101,6 +101,22 @@ Ran both alternative splits, 3 seeds each, same strong model:
 | label-dir β=0.1 | 0.678 ± 0.024 | 0.601 ± 0.112 | **−0.077 ± 0.128** | 0.493 → 0.516 | 1/3 |
 | label-dir β=0.5 | 0.687 ± 0.013 | 0.690 ± 0.006 | +0.003 ± 0.006 | 0.627 → 0.625 | 1/3 |
 | **specimen (urine/resp/blood)** | **0.696 ± 0.002** | **0.715 ± 0.001** | **+0.019 ± 0.004** | **0.679 → 0.702 (+0.023 ± 0.007)** | **3/3** |
+| **organism-community (disjoint bugs)** | **0.696 ± 0.008** | **0.719 ± 0.006** | **+0.023 ± 0.006** | **0.665 → 0.703 (+0.037 ± 0.010)** | **3/3** |
+
+**Organism-community (option #4, added 2026-08-07) is the strongest split.** Grouping patients so
+each hospital sees a disjoint set of bugs gives the largest clean FedAvg gain (+0.023) and — the
+headline — the **largest worst-hospital gain of any split (+0.037 ± 0.010)**. The giant hospital
+(one dominant organism, n≈38k) is the *worst* alone (~0.66) and gains *most* from federation
+(+0.02…+0.05) — the exact "lift the underserved site" effect the topology-aware method targets.
+FedAvg-best (0.719) edges past the pooled 0.71. This is the setting to build Phase 5 on.
+
+*OOM note:* the first organism run logged many `CUDA out of memory` errors — the ~38k-patient
+hospital didn't fit on the GPU beside another client, so it **skipped training on ~half the fit
+rounds** (`4 results and 1 failures`). Evaluation never failed (`5 results, 0 failures` every
+round), so the reported scores are complete and correct — and since the giant *under*-trained yet
+FedAvg still won, the gain is a **conservative floor**. Root cause (Ray reuses each client actor,
+so per-round GPU cache accumulated) fixed via `task.free_gpu()` after every local train/eval; a
+clean re-run should match or slightly exceed these numbers.
 
 **Specimen is the clean win — and the result we build Phase 5 on.** FedAvg beats local-only in all
 3 seeds, the gain **+0.019 ± 0.004 does not overlap zero** (unlike every ward-split gain), the

@@ -18,7 +18,7 @@ from ..data_loader import PK, load_cohort_frame
 from ..partition import dirichlet_ward_mixture
 from . import client_app, server_app
 from .task import (
-    DEVICE, build_and_save_clients, init_model_on, load_client_graph,
+    DEVICE, build_and_save_clients, free_gpu, init_model_on, load_client_graph,
     local_eval, local_train, read_fed_history, read_fed_records, reset_fed_history,
     write_run_config,
 )
@@ -42,6 +42,8 @@ def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
         f1, n = local_eval(model, data, "test_mask")
         f1s.append(round(f1, 4))
         ns.append(n)
+        del model, data
+        free_gpu()   # release before the next (possibly huge) client's model
     wavg = float(np.average(f1s, weights=ns)) if sum(ns) else 0.0
     return f1s, wavg
 
@@ -75,6 +77,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
 
     ngpu = (0.9 / n_clients) if DEVICE == "cuda" else 0.0
     reset_fed_history()
+    free_gpu()  # clear the local-only phase's allocations before the Ray clients start
     run_simulation(  # returns None in flwr 1.23; the strategy logs per-round F1 to disk
         server_app=server_app.app,
         client_app=client_app.app,

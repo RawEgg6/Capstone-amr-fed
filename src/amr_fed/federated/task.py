@@ -138,6 +138,16 @@ def init_model_on(data, cfg: dict):
     return model
 
 
+def free_gpu() -> None:
+    """Release cached GPU memory. Ray reuses each client actor across rounds, so without
+    this the per-round activation cache accumulates and the big client (e.g. the ~38k-patient
+    organism hospital) OOMs when co-scheduled with another. Cheap; no-op on CPU."""
+    if DEVICE == "cuda":
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
 def get_weights(model) -> list[np.ndarray]:
     return [v.cpu().numpy() for v in model.state_dict().values()]
 
@@ -165,7 +175,9 @@ def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float 
         loss = loss_fn(out, y[tr])
         loss.backward()
         opt.step()
-    return float(loss.item())
+    out = float(loss.item())
+    free_gpu()  # drop this round's activation cache so a reused actor doesn't grow unbounded
+    return out
 
 
 @torch.no_grad()
@@ -181,4 +193,6 @@ def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, int]:
         return 0.0, 0
     logits = model(data.x_dict, data.edge_index_dict, tri[:, mask],
                    tf[mask] if tf is not None else None)
-    return _macro_f1(y[mask], logits), int(mask.sum())
+    result = _macro_f1(y[mask], logits), int(mask.sum())
+    free_gpu()
+    return result
