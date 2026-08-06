@@ -48,10 +48,64 @@ def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
     return f1s, wavg
 
 
+def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
+    """Centralized 'pooled' baseline, scored with the SAME protocol as FedAvg so the
+    comparison is apples-to-apples: ONE model trained jointly on every hospital's train
+    triples, then evaluated on each hospital's OWN test set and size-weighted (+ worst).
+
+    Differs from FedAvg only in *how* it trains (joint full-batch GD on the union, no
+    weight-averaging rounds) — same graphs, same train/test masks, same architecture, same
+    per-hospital-averaged metric. Memory-safe: graphs live on CPU, one is moved to GPU at a
+    time and gradients are accumulated across hospitals before each step."""
+    import torch
+    from torch import nn
+
+    graphs = [load_client_graph(c) for c in range(n_clients)]  # keep on CPU
+    model = init_model_on(graphs[0], cfg)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+
+    # global class weight (pooled sees the union, so pos_weight is the union's neg/pos)
+    pos = sum(int(g.triple_label[g.train_mask].sum()) for g in graphs)
+    neg = sum(int((g.triple_label[g.train_mask] == 0).sum()) for g in graphs)
+    pos_weight = torch.tensor(neg / max(pos, 1), device=DEVICE)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    n_tr = [int(g.train_mask.sum()) for g in graphs]
+    total_tr = max(sum(n_tr), 1)
+
+    for _ in range(epochs):
+        model.train()
+        opt.zero_grad()
+        for c in range(n_clients):
+            data = graphs[c].to(DEVICE)
+            tr = data.train_mask.to(DEVICE)
+            tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+            tf = getattr(data, "triple_feat", None)
+            if tf is not None:
+                tf = tf.to(DEVICE)
+            out = model(data.x_dict, data.edge_index_dict, tri[:, tr],
+                        tf[tr] if tf is not None else None)
+            # size-weight each hospital's mean loss -> matches a per-example mean over the union
+            loss = loss_fn(out, y[tr]) * (n_tr[c] / total_tr)
+            loss.backward()  # accumulate grads across hospitals
+            del data
+            free_gpu()
+        opt.step()
+
+    f1s, ns = [], []
+    for c in range(n_clients):
+        f1, n = local_eval(model, graphs[c], "test_mask")
+        f1s.append(round(f1, 4))
+        ns.append(n)
+        free_gpu()
+    wavg = float(np.average(f1s, weights=ns)) if sum(ns) else 0.0
+    worst = round(min(f1s), 4) if f1s else None
+    return f1s, wavg, worst
+
+
 def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                local_epochs: int = 6, local_only_epochs: int = 60,
                seed: int = config.SEED, patient_history: bool = True, df=None,
-               partition_fn=None, label: str | None = None):
+               partition_fn=None, label: str | None = None, compute_pooled: bool = True):
     """partition_fn(df, seed) -> patient->client Series lets us swap the split
     (ward-Dirichlet default, or label_dirichlet / specimen_baseline). Any client
     labels (str/int) are normalised to contiguous 0..k-1 ids and n_clients is
@@ -75,6 +129,14 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     lo_f1s, lo_avg = run_local_only(n_clients, cfg, epochs=local_only_epochs)
     print(f"LOCAL-ONLY per-hospital macro-F1: {lo_f1s} | weighted avg = {lo_avg:.4f}")
 
+    # pooled baseline, scored with the SAME per-hospital protocol (apples-to-apples)
+    if compute_pooled:
+        pl_f1s, pl_avg, pl_worst = run_pooled(n_clients, cfg, epochs=local_only_epochs)
+        print(f"POOLED (centralized, same protocol): {pl_f1s} | weighted avg = {pl_avg:.4f} "
+              f"| worst = {pl_worst}")
+    else:
+        pl_f1s, pl_avg, pl_worst = None, POOLED_REFERENCE, None
+
     ngpu = (0.9 / n_clients) if DEVICE == "cuda" else 0.0
     reset_fed_history()
     free_gpu()  # clear the local-only phase's allocations before the Ray clients start
@@ -94,12 +156,14 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     fed_pc = records[best_idx].get("per_client", {}) if fed else {}
     fed_f1s = [fed_pc.get(str(c)) for c in range(n_clients)]
 
+    pooled_str = f"{pl_avg:.4f}" + ("" if pl_worst is None else f" (worst {pl_worst})")
     print(f"\n=== Phase 3 comparison ({tag}) ===")
-    print(f"  pooled (Phase 1, all data)     : {POOLED_REFERENCE}")
+    print(f"  pooled (centralized, same protocol): {pooled_str}")
     print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final}")
     print(f"  local-only (alone, weighted)   : {lo_avg:.4f}")
     if fed_best is not None:
-        print(f"  => FedAvg (best) {'BEATS' if fed_best > lo_avg else 'does NOT beat'} local-only")
+        print(f"  => FedAvg (best) {'BEATS' if fed_best > lo_avg else 'does NOT beat'} local-only; "
+              f"{'MATCHES/beats' if fed_best >= pl_avg else 'below'} pooled")
     # per-hospital breakdown + worst-client (the fairness story: FedAvg helps small/weak sites most)
     print("  per-hospital  (n | local-only -> FedAvg | delta):")
     for c in range(n_clients):
@@ -113,7 +177,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     if worst_fed is not None:
         print(f"  worst-hospital: local {worst_local:.4f} -> FedAvg {worst_fed:.4f} "
               f"({worst_fed - worst_local:+.4f})")
-    return {"alpha": alpha, "pooled": POOLED_REFERENCE, "fedavg_best": fed_best,
+    return {"alpha": alpha, "pooled": pl_avg, "pooled_worst": pl_worst,
+            "pooled_per_client": pl_f1s, "fedavg_best": fed_best,
             "fedavg_final": fed_final, "local_only": lo_avg,
             "local_only_per_client": lo_f1s, "fedavg_per_client": fed_f1s,
             "worst_local": worst_local, "worst_fed": worst_fed,
@@ -122,7 +187,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
 
 def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   local_epochs: int = 6, seeds=(42, 43, 44), patient_history: bool = True,
-                  df=None, partition_fn=None, label: str | None = None):
+                  df=None, partition_fn=None, label: str | None = None,
+                  compute_pooled: bool = True):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn(df, seed) swaps the split (default ward-Dirichlet
     at `alpha`; pass label_dirichlet / specimen_baseline for the non-IID settings).
@@ -135,15 +201,19 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
         runs.append(run_fedavg(alpha=alpha, n_clients=n_clients, rounds=rounds,
                                local_epochs=local_epochs, seed=s,
                                patient_history=patient_history, df=df,
-                               partition_fn=partition_fn, label=label))
+                               partition_fn=partition_fn, label=label,
+                               compute_pooled=compute_pooled))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None]
+        if not vals:
+            return None, None
         return round(float(np.mean(vals)), 4), round(float(np.std(vals)), 4)
 
     gains = [r["fedavg_best"] - r["local_only"] for r in runs
              if r["fedavg_best"] is not None]
     lo, fb, ff = ms("local_only"), ms("fedavg_best"), ms("fedavg_final")
+    pl, plw = ms("pooled"), ms("pooled_worst")    # centralized, same protocol
     wl, wf = ms("worst_local"), ms("worst_fed")   # worst-hospital (fairness) metric
     gmean, gstd = round(float(np.mean(gains)), 4), round(float(np.std(gains)), 4)
     worst_gains = [r["worst_fed"] - r["worst_local"] for r in runs
@@ -152,14 +222,16 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     wgstd = round(float(np.std(worst_gains)), 4) if worst_gains else None
 
     print(f"\n=== MULTI-SEED SUMMARY: {tag}, {len(seeds)} seeds ===")
-    print(f"  local-only         : {lo[0]} +/- {lo[1]}")
-    print(f"  FedAvg best-round  : {fb[0]} +/- {fb[1]}")
-    print(f"  FedAvg final       : {ff[0]} +/- {ff[1]}")
-    print(f"  gain (best-local)  : {gmean} +/- {gstd}   (pooled ref = {POOLED_REFERENCE})")
-    print(f"  worst-hosp local   : {wl[0]} +/- {wl[1]}")
-    print(f"  worst-hosp FedAvg  : {wf[0]} +/- {wf[1]}")
-    print(f"  worst-hosp gain    : {wgmean} +/- {wgstd}")
-    return {"alpha": alpha, "seeds": list(seeds), "local_only": lo, "fedavg_best": fb,
-            "fedavg_final": ff, "gain_mean": gmean, "gain_std": gstd,
-            "worst_local": wl, "worst_fed": wf,
+    print(f"  pooled (same protocol) : {pl[0]} +/- {pl[1]}  | worst {plw[0]} +/- {plw[1]}")
+    print(f"  local-only             : {lo[0]} +/- {lo[1]}")
+    print(f"  FedAvg best-round      : {fb[0]} +/- {fb[1]}")
+    print(f"  FedAvg final           : {ff[0]} +/- {ff[1]}")
+    print(f"  gain (best-local)      : {gmean} +/- {gstd}")
+    print(f"  FedAvg-best vs pooled  : {round(fb[0] - pl[0], 4) if pl[0] is not None else 'n/a'}")
+    print(f"  worst-hosp local       : {wl[0]} +/- {wl[1]}")
+    print(f"  worst-hosp FedAvg      : {wf[0]} +/- {wf[1]}")
+    print(f"  worst-hosp gain        : {wgmean} +/- {wgstd}")
+    return {"alpha": alpha, "seeds": list(seeds), "pooled": pl, "pooled_worst": plw,
+            "local_only": lo, "fedavg_best": fb, "fedavg_final": ff,
+            "gain_mean": gmean, "gain_std": gstd, "worst_local": wl, "worst_fed": wf,
             "worst_gain_mean": wgmean, "worst_gain_std": wgstd, "runs": runs}

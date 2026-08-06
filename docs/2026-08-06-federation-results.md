@@ -118,6 +118,28 @@ FedAvg still won, the gain is a **conservative floor**. Root cause (Ray reuses e
 so per-round GPU cache accumulated) fixed via `task.free_gpu()` after every local train/eval; a
 clean re-run should match or slightly exceed these numbers.
 
+### Apples-to-apples pooled comparison (2026-08-07)
+
+Earlier runs compared FedAvg against a **hardcoded** `POOLED_REFERENCE = 0.71` — a single Phase-1
+number measured on one *global* test set at a tuned threshold. That is not comparable to FedAvg's
+*per-hospital-averaged, best-of-10* metric, so any "FedAvg beats pooled" was an artifact of
+mismatched protocols (plus best-round cherry-picking + an averaging/regularization bonus — all
+expected in cross-silo FL; see below). Fixed: `run.run_pooled` now trains ONE model **jointly on
+every hospital's train triples** (same graphs, same train/test masks, same architecture;
+memory-safe — one graph on GPU at a time, gradients accumulated) and scores it with the
+**identical per-hospital-averaged protocol** as FedAvg. Every run now prints a matched
+`pooled (centralized, same protocol)` number (+ its worst-hospital). **Expectation:** pooled ≈
+FedAvg or slightly above; the correct claim is *"federated matches centralized without sharing
+data,"* not "beats." Re-run to populate the matched numbers.
+
+*Why cross-silo FedAvg can sit at/above centralized (literature):* averaging separately-trained
+models acts like an ensemble/regularizer ([non-IID regularization > centralized on 3 healthcare
+datasets, PMC 2025](https://pmc.ncbi.nlm.nih.gov/articles/PMC12290147/); [decentralized FL
+comparable-to/exceeding centralized on heterogeneous medical data,
+PMC9133021](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9133021/)), and realistic healthcare
+benchmarks show FedAvg landing right around pooled ([FLamby 2022](https://arxiv.org/abs/2210.04620)).
+Default expectation absent those effects is pooled ≥ FedAvg ([NIID-Bench](https://arxiv.org/pdf/2102.02079)).
+
 **Specimen is the clean win — and the result we build Phase 5 on.** FedAvg beats local-only in all
 3 seeds, the gain **+0.019 ± 0.004 does not overlap zero** (unlike every ward-split gain), the
 worst hospital (urine, n≈52k, the hardest at 0.68) gains **+0.023 ± 0.007**, and FedAvg-best 0.715
