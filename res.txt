@@ -1,0 +1,572 @@
+
+########## specimen  seed=42 ##########
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+specimen | 3 hospitals | patients each: [52114, 8371, 6523]
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+LOCAL-ONLY per-hospital macro-F1: [0.6834, 0.7319, 0.7735] | weighted avg = 0.6995 | AUROC = 0.8537
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+POOLED (centralized, same protocol): [0.6869, 0.656, 0.7064] | weighted avg = 0.6869 | AUROC = 0.8505 | worst = 0.656
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+WARNING :   DEPRECATED FEATURE: The `run_simulation` function is deprecated and will be removed in a future version of Flower. Please use `flwr run` in the CLI instead to run your simulation. Refer to the Flower Tutorials for more details: https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html
+
+            This is a deprecated feature. It will be removed
+            entirely in future versions of Flower.
+        
+INFO :      Starting Flower ServerApp, config: num_rounds=10, no round_timeout
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+INFO :      
+INFO :      [INIT]
+INFO :      Using initial global parameters provided by strategy
+INFO :      Starting evaluation of initial global parameters
+INFO :      Evaluation returned no results (`None`)
+INFO :      
+INFO :      [ROUND 1]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+(ClientAppActor pid=5315) /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1488: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+(ClientAppActor pid=5315)   warnings.warn(
+INFO :      aggregate_fit: received 3 results and 0 failures
+WARNING :   No fit_metrics_aggregation_fn provided
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 2]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 3]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 4]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 5]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 6]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 7]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 8]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 9]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 10]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [SUMMARY]
+INFO :      Run finished 10 round(s) in 105.11s
+INFO :      	History (loss, distributed):
+INFO :      		round 1: 0.0
+INFO :      		round 2: 0.0
+INFO :      		round 3: 0.0
+INFO :      		round 4: 0.0
+INFO :      		round 5: 0.0
+INFO :      		round 6: 0.0
+INFO :      		round 7: 0.0
+INFO :      		round 8: 0.0
+INFO :      		round 9: 0.0
+INFO :      		round 10: 0.0
+INFO :      	History (metrics, distributed, evaluate):
+INFO :      	{'auroc': [(1, 0.7750596259998921),
+INFO :      	           (2, 0.8122554925222553),
+INFO :      	           (3, 0.8194485892291963),
+INFO :      	           (4, 0.8277476800561123),
+INFO :      	           (5, 0.8335786379007479),
+INFO :      	           (6, 0.8382188486414157),
+INFO :      	           (7, 0.8429459082610414),
+INFO :      	           (8, 0.8454679750271447),
+INFO :      	           (9, 0.8482808999063408),
+INFO :      	           (10, 0.8515111282307919)],
+INFO :      	 'macro_f1': [(1, 0.6416921459628583),
+INFO :      	              (2, 0.6846814930478327),
+INFO :      	              (3, 0.696576714085746),
+INFO :      	              (4, 0.7039356808669768),
+INFO :      	              (5, 0.7048820914761753),
+INFO :      	              (6, 0.7051995612167998),
+INFO :      	              (7, 0.7118993707206276),
+INFO :      	              (8, 0.7162295582937217),
+INFO :      	              (9, 0.7174259473076311),
+INFO :      	              (10, 0.6894896894925959)]}
+INFO :      
+(ClientAppActor pid=5317) /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1488: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+(ClientAppActor pid=5317)   warnings.warn(
+FEDAVG macro-F1 by round: [0.6417, 0.6847, 0.6966, 0.7039, 0.7049, 0.7052, 0.7119, 0.7162, 0.7174, 0.6895]
+FEDAVG AUROC by round:    [0.7751, 0.8123, 0.8194, 0.8277, 0.8336, 0.8382, 0.8429, 0.8455, 0.8483, 0.8515]
+
+=== Phase 3 comparison (specimen) ===  [macro-F1 | AUROC]
+  pooled (centralized, same protocol): 0.6869 (worst 0.656) | AUROC 0.8505
+  FedAvg  best-round / final     : 0.7174 / 0.6895 | AUROC 0.8483
+  local-only (alone, weighted)   : 0.6995 | AUROC 0.8537
+  => FedAvg (best) BEATS local-only; MATCHES/beats pooled
+  per-hospital  (n | local-only -> FedAvg | delta):
+    H0: n= 52114 | 0.6834 -> 0.7111 | +0.0277
+    H1: n=  8371 | 0.7319 -> 0.6976 | -0.0343
+    H2: n=  6523 | 0.7735 -> 0.7668 | -0.0067
+  worst-hospital: local 0.6834 -> FedAvg 0.6976 (+0.0142)
+
+########## specimen  seed=43 ##########
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+specimen | 3 hospitals | patients each: [52114, 8371, 6523]
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+LOCAL-ONLY per-hospital macro-F1: [0.6742, 0.718, 0.7831] | weighted avg = 0.6931 | AUROC = 0.8479
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+POOLED (centralized, same protocol): [0.696, 0.6695, 0.7228] | weighted avg = 0.6974 | AUROC = 0.8504 | worst = 0.6695
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+WARNING :   DEPRECATED FEATURE: The `run_simulation` function is deprecated and will be removed in a future version of Flower. Please use `flwr run` in the CLI instead to run your simulation. Refer to the Flower Tutorials for more details: https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html
+
+            This is a deprecated feature. It will be removed
+            entirely in future versions of Flower.
+        
+INFO :      Starting Flower ServerApp, config: num_rounds=10, no round_timeout
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+INFO :      
+INFO :      [INIT]
+INFO :      Using initial global parameters provided by strategy
+INFO :      Starting evaluation of initial global parameters
+INFO :      Evaluation returned no results (`None`)
+INFO :      
+INFO :      [ROUND 1]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+(ClientAppActor pid=6902) /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1488: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+(ClientAppActor pid=6902)   warnings.warn(
+INFO :      aggregate_fit: received 3 results and 0 failures
+WARNING :   No fit_metrics_aggregation_fn provided
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 2]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 3]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 4]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 5]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 6]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 7]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 8]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 9]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 10]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [SUMMARY]
+INFO :      Run finished 10 round(s) in 104.04s
+INFO :      	History (loss, distributed):
+INFO :      		round 1: 0.0
+INFO :      		round 2: 0.0
+INFO :      		round 3: 0.0
+INFO :      		round 4: 0.0
+INFO :      		round 5: 0.0
+INFO :      		round 6: 0.0
+INFO :      		round 7: 0.0
+INFO :      		round 8: 0.0
+INFO :      		round 9: 0.0
+INFO :      		round 10: 0.0
+INFO :      	History (metrics, distributed, evaluate):
+INFO :      	{'auroc': [(1, 0.7797735997728273),
+INFO :      	           (2, 0.818776590307244),
+INFO :      	           (3, 0.8170515596146949),
+INFO :      	           (4, 0.8252425689878916),
+INFO :      	           (5, 0.8308440133599174),
+INFO :      	           (6, 0.8353511814885471),
+INFO :      	           (7, 0.8395261223985345),
+INFO :      	           (8, 0.8436590056441213),
+INFO :      	           (9, 0.8455884694434929),
+INFO :      	           (10, 0.8479911595828756)],
+INFO :      	 'macro_f1': [(1, 0.6580207589427448),
+INFO :      	              (2, 0.6841320616524237),
+INFO :      	              (3, 0.692574909047796),
+INFO :      	              (4, 0.6984206604527439),
+INFO :      	              (5, 0.7026036469943314),
+INFO :      	              (6, 0.7059882820588872),
+INFO :      	              (7, 0.7029179376890311),
+INFO :      	              (8, 0.7055758763919604),
+INFO :      	              (9, 0.7124303585856715),
+INFO :      	              (10, 0.7142268684147911)]}
+INFO :      
+(ClientAppActor pid=6903) /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1488: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+(ClientAppActor pid=6903)   warnings.warn(
+FEDAVG macro-F1 by round: [0.658, 0.6841, 0.6926, 0.6984, 0.7026, 0.706, 0.7029, 0.7056, 0.7124, 0.7142]
+FEDAVG AUROC by round:    [0.7798, 0.8188, 0.8171, 0.8252, 0.8308, 0.8354, 0.8395, 0.8437, 0.8456, 0.848]
+
+=== Phase 3 comparison (specimen) ===  [macro-F1 | AUROC]
+  pooled (centralized, same protocol): 0.6974 (worst 0.6695) | AUROC 0.8504
+  FedAvg  best-round / final     : 0.7142 / 0.7142 | AUROC 0.848
+  local-only (alone, weighted)   : 0.6931 | AUROC 0.8479
+  => FedAvg (best) BEATS local-only; MATCHES/beats pooled
+  per-hospital  (n | local-only -> FedAvg | delta):
+    H0: n= 52114 | 0.6742 -> 0.7079 | +0.0337
+    H1: n=  8371 | 0.7180 -> 0.6945 | -0.0235
+    H2: n=  6523 | 0.7831 -> 0.7623 | -0.0208
+  worst-hospital: local 0.6742 -> FedAvg 0.6945 (+0.0203)
+
+########## specimen  seed=44 ##########
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+specimen | 3 hospitals | patients each: [52114, 8371, 6523]
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+LOCAL-ONLY per-hospital macro-F1: [0.6822, 0.7038, 0.7634] | weighted avg = 0.6960 | AUROC = 0.8497
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+POOLED (centralized, same protocol): [0.686, 0.6562, 0.7071] | weighted avg = 0.6865 | AUROC = 0.8476 | worst = 0.6562
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+WARNING :   DEPRECATED FEATURE: The `run_simulation` function is deprecated and will be removed in a future version of Flower. Please use `flwr run` in the CLI instead to run your simulation. Refer to the Flower Tutorials for more details: https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html
+
+            This is a deprecated feature. It will be removed
+            entirely in future versions of Flower.
+        
+INFO :      Starting Flower ServerApp, config: num_rounds=10, no round_timeout
+/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
+INFO :      
+INFO :      [INIT]
+INFO :      Using initial global parameters provided by strategy
+INFO :      Starting evaluation of initial global parameters
+INFO :      Evaluation returned no results (`None`)
+INFO :      
+INFO :      [ROUND 1]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+(ClientAppActor pid=8478) /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1488: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+(ClientAppActor pid=8478)   warnings.warn(
+INFO :      aggregate_fit: received 3 results and 0 failures
+WARNING :   No fit_metrics_aggregation_fn provided
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 2]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 3]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 4]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 5]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 6]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 7]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 8]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 9]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [ROUND 10]
+INFO :      configure_fit: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_fit: received 3 results and 0 failures
+INFO :      configure_evaluate: strategy sampled 3 clients (out of 3)
+INFO :      aggregate_evaluate: received 3 results and 0 failures
+INFO :      
+INFO :      [SUMMARY]
+INFO :      Run finished 10 round(s) in 106.06s
+INFO :      	History (loss, distributed):
+INFO :      		round 1: 0.0
+INFO :      		round 2: 0.0
+INFO :      		round 3: 0.0
+INFO :      		round 4: 0.0
+INFO :      		round 5: 0.0
+INFO :      		round 6: 0.0
+INFO :      		round 7: 0.0
+INFO :      		round 8: 0.0
+INFO :      		round 9: 0.0
+INFO :      		round 10: 0.0
+INFO :      	History (metrics, distributed, evaluate):
+INFO :      	{'auroc': [(1, 0.747421639541277),
+INFO :      	           (2, 0.8018830909515556),
+INFO :      	           (3, 0.8119343868099326),
+INFO :      	           (4, 0.819150221600764),
+INFO :      	           (5, 0.8254086197955552),
+INFO :      	           (6, 0.8316826103835984),
+INFO :      	           (7, 0.8358152239945306),
+INFO :      	           (8, 0.8411149775159855),
+INFO :      	           (9, 0.8434884098609926),
+INFO :      	           (10, 0.8463279911461214)],
+INFO :      	 'macro_f1': [(1, 0.6002189139011762),
+INFO :      	              (2, 0.6666269199371581),
+INFO :      	              (3, 0.6851474922125392),
+INFO :      	              (4, 0.6943398697697695),
+INFO :      	              (5, 0.7000250059006916),
+INFO :      	              (6, 0.7023775720330683),
+INFO :      	              (7, 0.7056177869007708),
+INFO :      	              (8, 0.7049436045396925),
+INFO :      	              (9, 0.7090617852416151),
+INFO :      	              (10, 0.7125313906491554)]}
+INFO :      
+(ClientAppActor pid=8477) /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1488: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+(ClientAppActor pid=8477)   warnings.warn(
+FEDAVG macro-F1 by round: [0.6002, 0.6666, 0.6851, 0.6943, 0.7, 0.7024, 0.7056, 0.7049, 0.7091, 0.7125]
+FEDAVG AUROC by round:    [0.7474, 0.8019, 0.8119, 0.8192, 0.8254, 0.8317, 0.8358, 0.8411, 0.8435, 0.8463]
+
+=== Phase 3 comparison (specimen) ===  [macro-F1 | AUROC]
+  pooled (centralized, same protocol): 0.6865 (worst 0.6562) | AUROC 0.8476
+  FedAvg  best-round / final     : 0.7125 / 0.7125 | AUROC 0.8463
+  local-only (alone, weighted)   : 0.6960 | AUROC 0.8497
+  => FedAvg (best) BEATS local-only; MATCHES/beats pooled
+  per-hospital  (n | local-only -> FedAvg | delta):
+    H0: n= 52114 | 0.6822 -> 0.7067 | +0.0245
+    H1: n=  8371 | 0.7038 -> 0.6951 | -0.0087
+    H2: n=  6523 | 0.7634 -> 0.7533 | -0.0101
+  worst-hospital: local 0.6822 -> FedAvg 0.6951 (+0.0129)
+
+=== MULTI-SEED SUMMARY: specimen, 3 seeds ===
+  pooled (same protocol) : 0.6903 +/- 0.005  | worst 0.6606 +/- 0.0063
+  local-only             : 0.6962 +/- 0.0026
+  FedAvg best-round      : 0.7147 +/- 0.002
+  FedAvg final           : 0.7054 +/- 0.0113
+  gain (best-local)      : 0.0185 +/- 0.0019
+  FedAvg-best vs pooled  : 0.0244
+  worst-hosp local       : 0.6799 +/- 0.0041
+  worst-hosp FedAvg      : 0.6957 +/- 0.0013
+  worst-hosp gain        : 0.0158 +/- 0.0032
+  --- AUROC (weighted) ---
+  pooled AUROC           : 0.8495 +/- 0.0014
+  local-only AUROC       : 0.8504 +/- 0.0024
+  FedAvg (best) AUROC    : 0.8475 +/- 0.0009
+{'alpha': 0.5,
+ 'seeds': [42, 43, 44],
+ 'pooled': (0.6903, 0.005),
+ 'pooled_worst': (0.6606, 0.0063),
+ 'local_only': (0.6962, 0.0026),
+ 'fedavg_best': (0.7147, 0.002),
+ 'fedavg_final': (0.7054, 0.0113),
+ 'gain_mean': 0.0185,
+ 'gain_std': 0.0019,
+ 'worst_local': (0.6799, 0.0041),
+ 'worst_fed': (0.6957, 0.0013),
+ 'worst_gain_mean': 0.0158,
+ 'worst_gain_std': 0.0032,
+ 'pooled_auroc': (0.8495, 0.0014),
+ 'local_only_auroc': (0.8504, 0.0024),
+ 'fedavg_auroc_best': (0.8475, 0.0009),
+ 'runs': [{'alpha': 0.5,
+   'pooled': 0.6869131184679637,
+   'pooled_worst': 0.656,
+   'pooled_per_client': [0.6869, 0.656, 0.7064],
+   'fedavg_best': 0.7174,
+   'fedavg_final': 0.6895,
+   'local_only': 0.6995044702047468,
+   'local_only_per_client': [0.6834, 0.7319, 0.7735],
+   'fedavg_per_client': [0.7111, 0.6976, 0.7668],
+   'worst_local': 0.6834,
+   'worst_fed': 0.6976,
+   'sizes': [52114, 8371, 6523],
+   'fed_by_round': [0.6416921459628583,
+    0.6846814930478327,
+    0.696576714085746,
+    0.7039356808669768,
+    0.7048820914761753,
+    0.7051995612167998,
+    0.7118993707206276,
+    0.7162295582937217,
+    0.7174259473076311,
+    0.6894896894925959],
+   'pooled_auroc': 0.8505186521340531,
+   'local_only_auroc': 0.8536619390852602,
+   'fedavg_auroc_best': 0.8483,
+   'fedavg_auroc_per_client': [0.8444, 0.8511, 0.8695],
+   'fedavg_auroc_by_round': [0.7750596259998921,
+    0.8122554925222553,
+    0.8194485892291963,
+    0.8277476800561123,
+    0.8335786379007479,
+    0.8382188486414157,
+    0.8429459082610414,
+    0.8454679750271447,
+    0.8482808999063408,
+    0.8515111282307919]},
+  {'alpha': 0.5,
+   'pooled': 0.6973782829621408,
+   'pooled_worst': 0.6695,
+   'pooled_per_client': [0.696, 0.6695, 0.7228],
+   'fedavg_best': 0.7142,
+   'fedavg_final': 0.7142,
+   'local_only': 0.6931178926095564,
+   'local_only_per_client': [0.6742, 0.718, 0.7831],
+   'fedavg_per_client': [0.7079, 0.6945, 0.7623],
+   'worst_local': 0.6742,
+   'worst_fed': 0.6945,
+   'sizes': [52114, 8371, 6523],
+   'fed_by_round': [0.6580207589427448,
+    0.6841320616524237,
+    0.692574909047796,
+    0.6984206604527439,
+    0.7026036469943314,
+    0.7059882820588872,
+    0.7029179376890311,
+    0.7055758763919604,
+    0.7124303585856715,
+    0.7142268684147911],
+   'pooled_auroc': 0.8503728500790976,
+   'local_only_auroc': 0.8479383213099546,
+   'fedavg_auroc_best': 0.848,
+   'fedavg_auroc_per_client': [0.844, 0.8575, 0.8644],
+   'fedavg_auroc_by_round': [0.7797735997728273,
+    0.818776590307244,
+    0.8170515596146949,
+    0.8252425689878916,
+    0.8308440133599174,
+    0.8353511814885471,
+    0.8395261223985345,
+    0.8436590056441213,
+    0.8455884694434929,
+    0.8479911595828756]},
+  {'alpha': 0.5,
+   'pooled': 0.6865101594466387,
+   'pooled_worst': 0.6562,
+   'pooled_per_client': [0.686, 0.6562, 0.7071],
+   'fedavg_best': 0.7125,
+   'fedavg_final': 0.7125,
+   'local_only': 0.6959507266002133,
+   'local_only_per_client': [0.6822, 0.7038, 0.7634],
+   'fedavg_per_client': [0.7067, 0.6951, 0.7533],
+   'worst_local': 0.6822,
+   'worst_fed': 0.6951,
+   'sizes': [52114, 8371, 6523],
+   'fed_by_round': [0.6002189139011762,
+    0.6666269199371581,
+    0.6851474922125392,
+    0.6943398697697695,
+    0.7000250059006916,
+    0.7023775720330683,
+    0.7056177869007708,
+    0.7049436045396925,
+    0.7090617852416151,
+    0.7125313906491554],
+   'pooled_auroc': 0.847573438237937,
+   'local_only_auroc': 0.8497050646772408,
+   'fedavg_auroc_best': 0.8463,
+   'fedavg_auroc_per_client': [0.846, 0.8497, 0.8459],
+   'fedavg_auroc_by_round': [0.747421639541277,
+    0.8018830909515556,
+    0.8119343868099326,
+    0.819150221600764,
+    0.8254086197955552,
+    0.8316826103835984,
+    0.8358152239945306,
+    0.8411149775159855,
+    0.8434884098609926,
+    0.8463279911461214]}]}/usr/local/lib/python3.12/dist-packages/jupyter_client/session.py:203: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.utcnow().replace(tzinfo=utc)
