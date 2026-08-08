@@ -123,6 +123,31 @@ def homophily_split(df: pd.DataFrame, n_clients: int = 5,
     return _rank_bucket_split(_patient_homophily(df), n_clients)
 
 
+def _patient_hubness(df: pd.DataFrame) -> pd.Series:
+    """Per-patient hubness = triple-weighted mean of their organisms' tested-degree
+    (# distinct antibiotics each bug was tested against). NaN-free."""
+    d = df[[PK, ORG, ABX]]
+    org_deg = d.groupby(ORG)[ABX].nunique().rename("deg")
+    w = (d.groupby([PK, ORG]).size().rename("w").reset_index()
+         .merge(org_deg, on=ORG))
+    w["prod"] = w["w"] * w["deg"]
+    g = w.groupby(PK).agg(w=("w", "sum"), prod=("prod", "sum"))
+    return (g["prod"] / g["w"]).astype(float)
+
+
+def degree_skew_split(df: pd.DataFrame, n_clients: int = 5,
+                      seed: int = config.SEED) -> pd.Series:
+    """Topology distribution skew (OpenFGL 2024): hospitals differ in graph degree.
+
+    Each patient is scored by the triple-weighted mean tested-degree of their
+    organisms; patients are ranked and assigned to contiguous, balanced blocks.
+    Hospital 0 = SPARSE (rare bugs, few tested edges), hospital k-1 = HUB-heavy
+    (common bugs tested against most antibiotics) — contrasting degree distributions
+    the shared GNN cannot fit equally. `seed` unused (deterministic).
+    Returns Series index=patient -> client id."""
+    return _rank_bucket_split(_patient_hubness(df), n_clients)
+
+
 def dirichlet_ward_mixture(df: pd.DataFrame, n_clients: int = 5, alpha: float = 0.5,
                            seed: int = config.SEED) -> pd.Series:
     """Assign each patient to one of n_clients hospitals via a Dirichlet(alpha)

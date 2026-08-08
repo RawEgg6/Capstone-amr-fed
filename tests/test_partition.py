@@ -111,6 +111,26 @@ def test_homophily_split_separates_spectrum():
     assert homophily_split(df, n_clients=2).equals(a)          # deterministic
 
 
+from amr_fed.partition import _patient_hubness, degree_skew_split
+
+
+def test_degree_skew_split_sparse_vs_hub():
+    rows = []
+    for p in ["c1", "c2", "c3", "c4"]:                       # common-bug patients
+        for abx in ["a0", "a1", "a2", "a3"]:
+            rows.append((p, "o_common", abx, 0))
+    for p in ["r1", "r2", "r3", "r4"]:                       # rare-bug patients
+        rows.append((p, "o_rare", "a0", 0))
+    df = pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+    hub = _patient_hubness(df)
+    assert (hub.loc[["c1", "c2", "c3", "c4"]] == 4).all()
+    assert (hub.loc[["r1", "r2", "r3", "r4"]] == 1).all()
+    a = degree_skew_split(df, n_clients=2)
+    assert set(a.index[a == 0]) == {"r1", "r2", "r3", "r4"}  # sparse -> hospital 0
+    assert set(a.index[a == 1]) == {"c1", "c2", "c3", "c4"}  # hubs -> hospital 1
+    assert degree_skew_split(df, n_clients=2).equals(a)
+
+
 if __name__ == "__main__":
     test_assign_home_ward_priority()
     test_apportion_sums_to_n()
@@ -119,4 +139,5 @@ if __name__ == "__main__":
     test_rank_bucket_split_guards()
     test_patient_homophily_clustered_vs_scattered()
     test_homophily_split_separates_spectrum()
+    test_degree_skew_split_sparse_vs_hub()
     print("OK: partition unit tests passed.")
