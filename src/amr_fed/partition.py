@@ -47,6 +47,25 @@ def _apportion(n: int, props: np.ndarray) -> np.ndarray:
     return counts
 
 
+def _rank_bucket_split(score: pd.Series, n_clients: int) -> pd.Series:
+    """Deterministic quantile dial: rank patients by `score` (stable mergesort —
+    deterministic ties), assign contiguous, balanced blocks -> hospital 0 = lowest
+    scores, hospital k-1 = highest. Returns Series index=patient -> client id."""
+    if n_clients < 1:
+        raise ValueError(f"n_clients must be >= 1, got {n_clients}")
+    if len(score) < n_clients:
+        raise ValueError(f"n_clients={n_clients} exceeds #patients {len(score)}")
+    order = score.sort_values(kind="mergesort").index.to_numpy()
+    counts = _apportion(len(order), np.full(n_clients, 1.0 / n_clients))
+    assignment = pd.Series(-1, index=score.index, dtype="int64")
+    start = 0
+    for c, k in enumerate(counts):
+        assignment.loc[order[start:start + k]] = c
+        start += k
+    assert (assignment >= 0).all(), "some patient was left unassigned"
+    return assignment
+
+
 def dirichlet_ward_mixture(df: pd.DataFrame, n_clients: int = 5, alpha: float = 0.5,
                            seed: int = config.SEED) -> pd.Series:
     """Assign each patient to one of n_clients hospitals via a Dirichlet(alpha)
