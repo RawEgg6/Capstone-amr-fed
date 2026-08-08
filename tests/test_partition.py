@@ -90,6 +90,27 @@ def test_patient_homophily_clustered_vs_scattered():
     assert score.index.is_unique and not score.isna().any()
 
 
+from amr_fed.partition import homophily_split
+
+
+def test_homophily_split_separates_spectrum():
+    rows = []
+    for abx in ["a0", "a1", "a2"]:
+        for p in ["h1", "h2", "h3", "h4"]:
+            rows.append((p, "o_clust", abx, 1))
+    for p in ["x1", "x2", "x3", "x4"]:
+        rows.append((p, "o_mix", "a3", 0))
+        rows.append((p, "o_mix", "a4", 1))
+    df = pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+    a = homophily_split(df, n_clients=2)
+    assert a.index.is_unique and len(a) == 8
+    assert set(a.unique()) == {0, 1}
+    # hospital 0 = heterophilic patients, hospital 1 = homophilic patients
+    assert set(a.index[a == 0]) == {"x1", "x2", "x3", "x4"}
+    assert set(a.index[a == 1]) == {"h1", "h2", "h3", "h4"}
+    assert homophily_split(df, n_clients=2).equals(a)          # deterministic
+
+
 if __name__ == "__main__":
     test_assign_home_ward_priority()
     test_apportion_sums_to_n()
@@ -97,4 +118,5 @@ if __name__ == "__main__":
     test_rank_bucket_split_quantile_dial()
     test_rank_bucket_split_guards()
     test_patient_homophily_clustered_vs_scattered()
+    test_homophily_split_separates_spectrum()
     print("OK: partition unit tests passed.")

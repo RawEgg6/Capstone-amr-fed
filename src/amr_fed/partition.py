@@ -109,6 +109,20 @@ def _patient_homophily(df: pd.DataFrame) -> pd.Series:
     return d.groupby(PK)["dev"].mean().fillna(0.0)
 
 
+def homophily_split(df: pd.DataFrame, n_clients: int = 5,
+                    seed: int = config.SEED) -> pd.Series:
+    """Structure non-IID split: hospitals span the homophily spectrum.
+
+    Each patient is scored by the assortativity-style homophily deviation of their
+    (organism, antibiotic) tested edges; patients are ranked and assigned to
+    contiguous, balanced blocks. Hospital 0 = most HETEROPHILIC (resistance
+    scattered), hospital k-1 = most HOMOPHILIC (resistance clustered). The deviation
+    subtracts the ambient resistance rate, so resistance RATE stays roughly constant
+    across hospitals — the divergence is structural. `seed` unused (deterministic).
+    Returns Series index=patient -> client id."""
+    return _rank_bucket_split(_patient_homophily(df), n_clients)
+
+
 def dirichlet_ward_mixture(df: pd.DataFrame, n_clients: int = 5, alpha: float = 0.5,
                            seed: int = config.SEED) -> pd.Series:
     """Assign each patient to one of n_clients hospitals via a Dirichlet(alpha)
