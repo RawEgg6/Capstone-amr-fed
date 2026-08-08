@@ -24,7 +24,7 @@ from .data_loader import ADI, PK
 WARD_COL = "ward"  # priority-collapsed per-culture ward added by data_loader
 LABEL = "label"    # binary target column (Resistant/Intermediate=1 vs Susceptible=0)
 CDESC = config.COLUMNS["culture_description"]
-ORG = config.COLUMNS["organism"]
+ORG, ABX = config.COLUMNS["organism"], config.COLUMNS["antibiotic"]
 _SPECIMEN_VOCAB = ["URINE", "RESPIRATORY", "BLOOD"]  # mirror graph_build._SPECIMEN_VOCAB
 
 
@@ -64,6 +64,49 @@ def _rank_bucket_split(score: pd.Series, n_clients: int) -> pd.Series:
         start += k
     assert (assignment >= 0).all(), "some patient was left unassigned"
     return assignment
+
+
+def _tested_edge_homophily(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-(organism, antibiotic) tested edge: binary majority label + assortativity-
+    style homophily deviation. b(o,a) = majority label over the pair's triples
+    (rate >= 0.5 -> 1). agreement(e) = fraction of e's neighbor tested-edges (sharing
+    organism OR antibiotic endpoint) with the same binary label. dev(e) = agreement(e)
+    - P(b(e)), where P(b) is the global fraction of tested edges with label b — this
+    removes the ambient resistance rate, so the measure is structural, not a label-rate
+    shift. Undefined (degree <= 1 on both sides) -> dev 0 (neutral).
+    Returns DataFrame indexed by (ORG, ABX) with columns b, dev."""
+    d = df[[ORG, ABX, "label"]]
+    pair = d.groupby([ORG, ABX], sort=False).agg(rate=("label", "mean"))
+    b = (pair["rate"] >= 0.5).astype(np.int8)
+    t = pd.DataFrame({ORG: pair.index.get_level_values(0),
+                      ABX: pair.index.get_level_values(1),
+                      "b": b.to_numpy()})
+    org_stat = t.groupby(ORG)["b"].agg(n_pos_org="sum", deg_org="size")
+    abx_stat = t.groupby(ABX)["b"].agg(n_pos_abx="sum", deg_abx="size")
+    t = t.merge(org_stat, on=ORG, how="left").merge(abx_stat, on=ABX, how="left")
+    bb = t["b"].to_numpy()
+    deg_o, n_o = t["deg_org"].to_numpy(), t["n_pos_org"].to_numpy()
+    deg_a, n_a = t["deg_abx"].to_numpy(), t["n_pos_abx"].to_numpy()
+    # same-label neighbor count excluding self
+    same_o = np.where(bb == 1, n_o - 1, (deg_o - n_o) - 1).astype(float)
+    same_a = np.where(bb == 1, n_a - 1, (deg_a - n_a) - 1).astype(float)
+    # np.where evaluates both branches eagerly, so deg_x == 1 -> 0/0 (nan) would emit a
+    # RuntimeWarning even though the result is discarded; suppress to keep output pristine.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        agree_o = np.where(deg_o > 1, same_o / (deg_o - 1), np.nan)
+        agree_a = np.where(deg_a > 1, same_a / (deg_a - 1), np.nan)
+    agree = np.nanmean(np.column_stack([agree_o, agree_a]), axis=1)  # one-sided OK
+    p1 = float(b.mean())
+    chance = np.where(bb == 1, p1, 1.0 - p1)
+    dev = np.where(np.isnan(agree), 0.0, agree - chance)             # both deg<=1 -> neutral
+    return pd.DataFrame({"b": bb, "dev": dev}, index=pair.index)
+
+
+def _patient_homophily(df: pd.DataFrame) -> pd.Series:
+    """Per-patient homophily score = mean deviation over their triples (NaN-free)."""
+    edges = _tested_edge_homophily(df)
+    d = df[[PK, ORG, ABX]].merge(edges[["dev"]], left_on=[ORG, ABX], right_index=True, how="left")
+    return d.groupby(PK)["dev"].mean().fillna(0.0)
 
 
 def dirichlet_ward_mixture(df: pd.DataFrame, n_clients: int = 5, alpha: float = 0.5,

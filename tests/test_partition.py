@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from amr_fed.data_loader import PK
+from amr_fed.data_loader import PK, ORG, ABX
 from amr_fed.partition import WARD_COL, _apportion, assign_home_ward, dirichlet_ward_mixture
 
 
@@ -70,10 +70,31 @@ def test_rank_bucket_split_guards():
         pass
 
 
+from amr_fed.partition import _patient_homophily
+
+
+def test_patient_homophily_clustered_vs_scattered():
+    # o_clust: every tested edge majority-RESISTANT -> homophilic (dev > 0)
+    # o_mix:   half-S half-R -> heterophilic (dev < 0)
+    rows = []
+    for abx in ["a0", "a1", "a2"]:
+        for p in ["h1", "h2", "h3", "h4"]:
+            rows.append((p, "o_clust", abx, 1))
+    for p in ["x1", "x2", "x3", "x4"]:
+        rows.append((p, "o_mix", "a3", 0))
+        rows.append((p, "o_mix", "a4", 1))
+    df = pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+    score = _patient_homophily(df)
+    assert (score.loc[["h1", "h2", "h3", "h4"]] > 0).all()          # homophilic
+    assert (score.loc[["x1", "x2", "x3", "x4"]] < 0).all()          # heterophilic
+    assert score.index.is_unique and not score.isna().any()
+
+
 if __name__ == "__main__":
     test_assign_home_ward_priority()
     test_apportion_sums_to_n()
     test_dirichlet_assigns_every_patient_once()
     test_rank_bucket_split_quantile_dial()
     test_rank_bucket_split_guards()
+    test_patient_homophily_clustered_vs_scattered()
     print("OK: partition unit tests passed.")
