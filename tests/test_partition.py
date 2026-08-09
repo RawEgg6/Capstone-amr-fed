@@ -8,8 +8,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.data_loader import PK, ORG, ABX
 from amr_fed.partition import (
-    WARD_COL, _apportion, assign_home_ward, dirichlet_ward_mixture,
-    _quadrant_assign, _residualize, topology_split,
+    WARD_COL, _apportion, _greedy_pack, assign_home_ward, dirichlet_ward_mixture,
+    louvain_split, organism_community, _quadrant_assign, _residualize, topology_split,
 )
 
 
@@ -266,6 +266,76 @@ def test_residualize_decorrelates():
     assert _quadrant_assign(hom, _residualize(hub, hom), 4, 0.0, 42).equals(dec)
 
 
+def _nx_or_skip():
+    try:
+        import networkx  # noqa: F401
+        return True
+    except ImportError:
+        print("SKIP: louvain_split requires networkx")
+        return False
+
+
+def test_greedy_pack_balances_loads():
+    counts = pd.Series({"c1": 100, "c2": 80, "c3": 50, "c4": 30, "c5": 10})
+    assignment = _greedy_pack(counts, 3)
+    assert set(assignment) == set(counts.index)              # every item assigned once
+    assert all(0 <= v < 3 for v in assignment.values())
+    # exact greedy trace: c1->0, c2->1, c3->2, c4->2, c5->1
+    assert dict(assignment) == {"c1": 0, "c2": 1, "c3": 2, "c4": 2, "c5": 1}
+    loads = [0, 0, 0]
+    for item, size in counts.items():
+        loads[assignment[item]] += size
+    assert max(loads) - min(loads) <= int(counts.max())      # balanced within max item size
+
+
+def test_organism_community_disjoint_bug_buckets():
+    # two organisms -> each lands in its own hospital (greedy, largest first)
+    df = pd.DataFrame({
+        PK: ["pA1", "pA2", "pA3", "pB1", "pB2"],
+        ORG: ["oA", "oA", "oA", "oB", "oB"],
+        ABX: ["a0", "a1", "a2", "a3", "a4"],
+    })
+    a = organism_community(df, n_clients=2)
+    assert a.index.is_unique and len(a) == 5               # 1:1, no leakage
+    assert set(a.loc[["pA1", "pA2", "pA3"]]) == {0}         # oA patients -> hospital 0
+    assert set(a.loc[["pB1", "pB2"]]) == {1}                # oB patients -> hospital 1
+    assert organism_community(df, n_clients=2).equals(a)    # deterministic
+
+
+def test_louvain_split_separates_disjoint_components():
+    if not _nx_or_skip():
+        return
+    rows = []
+    for p in ["pA1", "pA2", "pA3"]:                       # cluster A: orgs oA1,oA2 x aA1..aA3
+        for a in ["aA1", "aA2", "aA3"]:
+            rows.append((p, "oA1", a))
+    for p in ["pA4", "pA5", "pA6"]:
+        for a in ["aA1", "aA2", "aA3"]:
+            rows.append((p, "oA2", a))
+    for p in ["pB1", "pB2"]:                              # cluster B: orgs oB1,oB2 x aB1..aB3
+        for a in ["aB1", "aB2", "aB3"]:
+            rows.append((p, "oB1", a))
+    for p in ["pB3", "pB4"]:
+        for a in ["aB1", "aB2", "aB3"]:
+            rows.append((p, "oB2", a))
+    df = pd.DataFrame(rows, columns=[PK, ORG, ABX])
+    a = louvain_split(df, n_clients=2)
+    assert a.index.is_unique and len(a) == 10              # 1:1, no leakage
+    hospA = set(a.loc[["pA1", "pA2", "pA3", "pA4", "pA5", "pA6"]])
+    hospB = set(a.loc[["pB1", "pB2", "pB3", "pB4"]])
+    assert len(hospA) == len(hospB) == 1                   # each cluster in a single hospital
+    assert hospA & hospB == set()                           # disjoint hospitals
+    assert louvain_split(df, n_clients=2).equals(a)         # deterministic
+
+
+def test_partition_imports_without_networkx():
+    """partition.py must import with NO top-level networkx (lazy, call-time import)."""
+    import importlib
+    mod = importlib.import_module("amr_fed.partition")
+    assert callable(getattr(mod, "louvain_split", None))   # the lazy-import function exists
+    assert not hasattr(mod, "nx")                          # networkx never a module attribute
+
+
 if __name__ == "__main__":
     test_assign_home_ward_priority()
     test_apportion_sums_to_n()
@@ -282,4 +352,8 @@ if __name__ == "__main__":
     test_quadrant_assign_guards()
     test_topology_split_wrapper()
     test_residualize_decorrelates()
+    test_greedy_pack_balances_loads()
+    test_organism_community_disjoint_bug_buckets()
+    test_louvain_split_separates_disjoint_components()
+    test_partition_imports_without_networkx()
     print("OK: partition unit tests passed.")

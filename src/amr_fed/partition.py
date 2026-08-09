@@ -294,6 +294,67 @@ def label_dirichlet(df: pd.DataFrame, n_clients: int = 5, beta: float = 0.5,
     return assignment
 
 
+def _greedy_pack(counts: pd.Series, n_bins: int) -> dict:
+    """Pack items into n_bins bins, smallest-load-first (largest items first).
+
+    Iterates `counts` in Series order, assigning each item to the currently
+    emptiest bin (`np.argmin(loads)`), so the load spread stays within the largest
+    item size even when sizes are skewed. Callers pass counts sorted by size
+    descending (e.g. a `Series.value_counts()`), which is the order the greedy
+    wants. Deterministic. Returns dict mapping item -> bin (int 0..n_bins-1)."""
+    loads = np.zeros(n_bins)
+    assignment = {}
+    for item, size in counts.items():
+        bin_idx = int(np.argmin(loads))
+        loads[bin_idx] += size
+        assignment[item] = bin_idx
+    return assignment
+
+
+def louvain_split(df: pd.DataFrame, n_clients: int = 5,
+                  seed: int = config.SEED) -> pd.Series:
+    """FedGTA-style community split: Louvain communities of the organism-antibiotic
+    test graph, greedily packed into hospitals.
+
+    Builds a weighted bipartite graph on (organism, antibiotic) tested pairs
+    (edge weight = pair count, node ids coerced to str so they're consistent);
+    networkx `louvain_communities` partitions it into communities (seeded). Each
+    patient inherits the community of their dominant (mode) organism, and communities
+    are packed into n_clients balanced hospitals via `_greedy_pack` (smallest-load-
+    first). Hospitals therefore see topologically *different* bug neighbourhoods
+    through the community-detection lens — the FedGTA/OpenFGL community-split idea.
+
+    NOTE: if the test graph yields fewer communities than n_clients, some hospitals
+    are empty; run_fedavg self-heals to n_clients = max(hospital)+1, so the effective
+    hospital count may be less than requested.
+
+    Requires networkx (lazy import at call time; raises a clear ImportError with an
+    install hint if missing). Deterministic (seed). Returns Series index=patient ->
+    client id."""
+    try:
+        import networkx as nx
+        from networkx.algorithms.community import louvain_communities
+    except ImportError as e:  # keep partition.py importable without networkx
+        raise ImportError(
+            "louvain_split requires networkx. Install with: pip install networkx"
+        ) from e
+
+    d = df[[ORG, ABX]]
+    edges = d.groupby([ORG, ABX]).size()  # weight = count of tested pairs per (org, abx)
+    G = nx.Graph()
+    G.add_nodes_from(edges.index.get_level_values(0).astype(str), bipartite=0)
+    G.add_nodes_from(edges.index.get_level_values(1).astype(str), bipartite=1)
+    G.add_weighted_edges_from((str(o), str(a), int(w)) for (o, a), w in edges.items())
+
+    comms = louvain_communities(G, weight="weight", seed=seed)
+    comm_map = {node: cid for cid, comm in enumerate(comms) for node in comm}
+
+    patient_assignments = df.groupby(PK)[ORG].agg(lambda x: x.mode().iloc[0]).astype(str)
+    comm_counts = patient_assignments.map(comm_map).value_counts()  # patients per community
+    assignment = _greedy_pack(comm_counts, n_clients)
+    return patient_assignments.map(comm_map).map(assignment).astype(int).rename("hospital")
+
+
 def _specimen_category(s: pd.Series) -> pd.Series:
     """Map raw culture_description to {URINE,RESPIRATORY,BLOOD,OTHER} (matches graph_build)."""
     cd = s.astype(str).str.upper()
@@ -327,12 +388,7 @@ def organism_community(df: pd.DataFrame, n_clients: int = 5,
     d = pd.DataFrame({PK: df[PK].to_numpy(), "org": df[ORG].astype(str).to_numpy()})
     home_org = d.groupby(PK)["org"].agg(lambda x: x.mode().iloc[0])  # dominant organism/patient
     counts = home_org.value_counts()  # patients per organism, largest first
-    loads = np.zeros(n_clients)
-    org_to_client = {}
-    for org, cnt in counts.items():
-        c = int(np.argmin(loads))     # put this organism in the currently-emptiest hospital
-        org_to_client[org] = c
-        loads[c] += cnt
+    org_to_client = _greedy_pack(counts, n_clients)
     return home_org.map(org_to_client)
 
 
