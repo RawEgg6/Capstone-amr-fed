@@ -6,7 +6,7 @@
 for whether a split is "hard enough" — i.e., FedAvg measurably trails pooled, giving the
 Phase-5 topology-aware aggregator real headroom.
 
-Three conditions must ALL hold (mean over seeds):
+Three conditions must ALL hold (mean over 3 seeds):
 
 | Condition | Threshold | Rationale |
 |-----------|-----------|-----------|
@@ -16,57 +16,55 @@ Three conditions must ALL hold (mean over seeds):
 
 ## Calibration knobs
 
-| Knob | Default | Direction to widen gap | Direction to lift FedAvg |
-|------|---------|----------------------|--------------------------|
-| `purity` (topology_split) | 0.0 | Lower → purer quadrants, wider FedAvg-pooled gap | Raise (0.2) → mixes patients across quadrants, lifts FedAvg off the floor |
-| `hidden` | 64 | Lower (32) — narrow model hurts FedAvg's averaging more than pooled's joint GD | Raise (128) — wider model closes the gap |
-| `rounds` × `local_epochs` | 6 × 3 = 18 | Less budget (4 × 2 = 8) — FedAvg wastes budget on client drift | More budget (8 × 4 = 32) |
-| `n_clients` | 8 | More clients (up to surgical minimum) — averaging drifts further | Fewer clients (4) — larger hospitals, closer to pooled |
-| `decorrelate` | False | True — if homophily/hubness axes are correlated, residualize to create purer quadrants | N/A |
+| Knob | Effect |
+|------|--------|
+| `purity` (topology_split) | **FedAvg-lifting dial**: 0.0 = pure quadrants (max divergence); 0.2 = mixed, lifts FedAvg off floor. Pooled barely moves. |
+| `hidden` | Narrower (64→32) = more FedAvg-pooled gap. Wider (128) = restores pooled strength. |
+| `rounds × local_epochs` | More budget = pooled trains better, closes the headroom gap. Less = FedAvg's 8× gradient-step advantage grows. |
+| `n_clients` | More hospitals = averaging drifts further, FedAvg degrades faster than pooled. |
+| `decorrelate` | True if homophily/hubness axes correlated → purer quadrants. Check `_self_check` diagnostic. |
 
-`purity` is the **FedAvg-lifting dial**: pooled trains on the union regardless of partition,
-so mixing a few patients across quadrants lifts FedAvg while barely affecting pooled.
+## Protocol history
 
-## Protocol
+### v1 (2026-08-09, hidden=64, 6r × 3e = 18 budget)
 
-Starting calibrated protocol (from the "Calibrate protocol" decision in the plan):
+| Split | n | Pooled (mean±std) | FedAvg-best | Local-only | Worst local→Fed | vs Pooled | PASS? |
+|-------|---|-------------------|-------------|------------|------------------|-----------|-------|
+| homophily | 8 | 0.6732±.0065 | 0.7014±.0025 | 0.6918±.0017 | 0.6695→0.6930 | **+0.028** | ❌ |
+| degree-skew | 8 | 0.6785±.0056 | 0.6928±.0085 | 0.6862±.0014 | 0.6371→0.6790 | **+0.014** | ❌ |
+| topology-corners | 8 | 0.6881±.0016 | 0.7036±.0014 | 0.6900±.0076 | 0.6044→0.6751 | **+0.015** | ❌ |
+| louvain | 3* | 0.6596±.0096 | 0.6976±.0009 | 0.6877±.0062 | 0.6722→0.6614 | **+0.038** | ❌ |
 
-- `n_clients`: 8 (topology) / 5 (louvain) — more than the old 5
-- `rounds`: 6, `local_epochs`: 3 → matched budget = 18 epochs (old: 10 × 6 = 60)
-- `hidden`: 64 (old: 128) — inverted widening-theorem lever
-- Seeds: 42, 43, 44
+*Louvain: requested 5 hospitals, got 3 communities (sizes ~73%/21%/5%). Worst hospital got WORSE with FedAvg — right shape, pooled was too weak.*
 
-## Winning configuration
+**Root cause:** hidden=64 + 18-epoch matched budget under-trained pooled (0.66–0.69 vs old Phase 1 reference 0.71). Narrow model didn't hurt FedAvg's averaging more than pooled's joint GD — FedAvg's 8× gradient-step advantage dominated at short budgets.
 
-> **🟡 PENDING — run on Colab with ARMD data mounted.**
+### v2 (current, hidden=128, 8r × 4e = 32 budget)
 
-### topology_split (2-D crossed quadrants)
+Wider model + more budget to restore pooled strength (~0.71 target). FedAvg's 8× gradient-step advantage should shrink as total budget grows.
 
-| Run | purity | n_clients | rounds | local_epochs | hidden | Pooled (mean±std) | FedAvg-best (mean±std) | Local-only (mean±std) | Worst-Fed (mean±std) | Worst-Pooled (mean±std) | PASS/FAIL |
-|-----|--------|-----------|--------|--------------|--------|-------------------|------------------------|----------------------|---------------------|------------------------|-----------|
-| 1 | 0.0 | 8 | 6 | 3 | 64 | — | — | — | — | — | — |
+| Split | purity | n | rounds | loc_ep | hidden | Pooled | FedAvg-best | Local | Worst-Fed | Worst-Pooled | PASS? |
+|-------|--------|---|--------|--------|--------|--------|-------------|-------|-----------|-------------|-------|
+| topology | 0.0 | 8 | 8 | 4 | 128 | — | — | — | — | — | — |
+| louvain | — | 5* | 8 | 4 | 128 | — | — | — | — | — | — |
 
-### louvain_split (community detection)
+## Splits removed from calibration runs
 
-| Run | n_clients | rounds | local_epochs | hidden | Pooled (mean±std) | FedAvg-best (mean±std) | Local-only (mean±std) | Worst-Fed (mean±std) | Worst-Pooled (mean±std) | PASS/FAIL |
-|-----|-----------|--------|--------------|--------|-------------------|------------------------|----------------------|---------------------|------------------------|-----------|
-| 1 | 5 | 6 | 3 | 64 | — | — | — | — | — | — |
+**homophily** and **degree-skew** (single-axis rank splits) were run at v1 and showed zero
+headroom — FedAvg beat pooled by +0.028 and +0.014 respectively. Even at hidden=64/18-budget,
+single-axis divergence is too mild. These splits are useful for Phase 5 sensitivity analysis
+(does topology-aware aggregation help even when FedAvg already wins?) but are not calibration targets.
 
 ## Headroom attribution story (Phase 5)
 
 When the gate passes:
 
-1. **Topology divergence is measurable** — the split creates structurally different hospitals
-   (homophily × degree quadrants; Louvain communities on the test graph).
-2. **Resistance rate is a reported covariate** — per-hospital rate is documented alongside
-   topology stats, not held constant. The Phase-5 story: topology-aware aggregation recovers
-   **structurally different AND label-shifted worst hospitals**.
-3. **The headroom is real** — pooled stays strong (≥0.60 worst hospital) while FedAvg
-   trails by a measurable margin, giving the Phase-5 aggregator a target to beat.
-4. **The protocol is calibrated** — more clients + shorter matched budget + narrower model
-   expose heterogeneity that the old 5-client/128-width/60-epoch protocol hid.
+1. **Topology divergence is measurable** — homophily × degree quadrants; Louvain communities on the test graph
+2. **Resistance rate is a reported covariate** — per-hospital rate documented alongside topology stats, not held constant
+3. **The headroom is real** — pooled stays strong (≥0.60 worst hospital) while FedAvg trails
+4. **Phase 5 story:** topology-aware aggregation recovers structurally different AND label-shifted worst hospitals
 
-## Runtime diagnostics (from Task 6 _self_check)
+## Runtime diagnostics
 
 > **🟡 PENDING — run `python -m amr_fed.partition` on Colab/data machine.**
 

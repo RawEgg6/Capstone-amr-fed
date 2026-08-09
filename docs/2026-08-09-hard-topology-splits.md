@@ -1,8 +1,10 @@
 # Hard Topology Splits Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **✅ IMPLEMENTED — this plan was executed on 2026-08-09 (commits a6e028a..d14f2e9).**
+> The unchecked checkboxes below are historical; the code exists and tests pass.
+> See `docs/2026-08-09-headroom-calibration.md` for current calibration status.
 
-**Goal:** Add two deterministic "hard" topology splits (`homophily_split`, `degree_skew_split`) to `src/amr_fed/partition.py` so FedAvg has measurable headroom for the Phase-5 topology-aware aggregator.
+**Goal:** Add deterministic "hard" topology splits (`homophily_split`, `degree_skew_split`, `topology_split`, `louvain_split`) to `src/amr_fed/partition.py` so FedAvg has measurable headroom for the Phase-5 topology-aware aggregator.
 
 **Architecture:** Both splits compute a per-patient topology score from the cohort frame (pure pandas, no torch), then assign patients to hospitals with a shared rank-based quantile dial (`_rank_bucket_split`) — hospital 0 is the most extreme end of the spectrum, hospital k−1 the opposite extreme. Both plug into the existing `run_fedavg(partition_fn=...)` contract unchanged.
 
