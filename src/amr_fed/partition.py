@@ -310,6 +310,32 @@ def _self_check() -> None:
     print(g.to_string()); print("non-IID(wstd):", round(niid_org, 4))
     assert org.index.is_unique and len(org) == n_pat, "organism split: 1:1 patient assignment"
 
+    print("\n=== hard topology splits (deterministic quantile dial) ===")
+    def _topology_report(name, score, assign):
+        d = df[[PK, "label"]].copy()
+        d["client"] = d[PK].map(assign)
+        d["score"] = d[PK].map(score)
+        g = d.groupby("client").agg(n_patients=(PK, "nunique"), n_tests=("label", "size"),
+                                    resist_rate=("label", "mean"), mean_score=("score", "mean"))
+        print(f"\n{name}:")
+        print(g.round(4).to_string())
+        rr = g["resist_rate"]
+        span = g["mean_score"].iloc[-1] - g["mean_score"].iloc[0]
+        print(f"  resistance-rate spread: {rr.max() - rr.min():.4f} "
+              f"(label-Dirichlet is ~0.3+; should stay small = structural, not a label shift)")
+        print(f"  mean-score span (H0 -> H{len(g) - 1}): {span:.4f}")
+        assert g["mean_score"].is_monotonic_increasing, f"{name}: mean score not monotone"
+        assert rr.max() - rr.min() < 0.20, f"{name}: resistance-rate spread too large"
+        return g
+
+    for fn, score_fn, name in [
+        (homophily_split, _patient_homophily, "homophily spectrum"),
+        (degree_skew_split, _patient_hubness, "degree skew"),
+    ]:
+        assign = fn(df, n_clients=5)
+        assert assign.index.is_unique and len(assign) == n_pat, f"{name}: 1:1 assignment"
+        _topology_report(name, score_fn(df), assign)
+
     # the dial must work: smaller alpha -> more heterogeneity
     s = sweep.sort_values("alpha")
     assert s["non_iid_wstd"].iloc[0] > s["non_iid_wstd"].iloc[-1], \
