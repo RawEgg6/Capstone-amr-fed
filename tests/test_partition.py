@@ -123,12 +123,43 @@ def test_degree_skew_split_sparse_vs_hub():
         rows.append((p, "o_rare", "a0", 0))
     df = pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
     hub = _patient_hubness(df)
-    assert (hub.loc[["c1", "c2", "c3", "c4"]] == 4).all()
-    assert (hub.loc[["r1", "r2", "r3", "r4"]] == 1).all()
+    # breadth = log1p(# distinct antibiotics); common patients see a0..a3 (4), rare see a0 (1)
+    assert np.isclose(hub.loc[["c1", "c2", "c3", "c4"]], np.log1p(4)).all()
+    assert np.isclose(hub.loc[["r1", "r2", "r3", "r4"]], np.log1p(1)).all()
     a = degree_skew_split(df, n_clients=2)
     assert set(a.index[a == 0]) == {"r1", "r2", "r3", "r4"}  # sparse -> hospital 0
     assert set(a.index[a == 1]) == {"c1", "c2", "c3", "c4"}  # hubs -> hospital 1
+    assert degree_skew_split(df, n_clients=2).equals(a)      # deterministic
+
+
+def test_hubness_tracks_breadth_not_max_org_degree():
+    # No-saturation regression: o_max dominates EVERY tested edge, so the old
+    # triple-weighted mean (== o_max's tested-degree == 20) scores every patient the
+    # same -> the degree-skew dial plateaus and hospitals are indistinguishable.
+    # Breadth must separate: P_b (22 distinct antibiotics) > P_a (20 distinct).
+    rows = []
+    for i in range(20):
+        rows.append(("P_a", "o_max", f"a{i}", 0))   # P_a grows only o_max (20 triples)
+    for i in range(20):
+        rows.append(("P_b", "o_max", f"a{i}", 0))   # o_max's 20 antibiotics ...
+    rows.append(("P_b", "o_extra", "a20", 0))       # ... plus 2 more from o_extra
+    rows.append(("P_b", "o_extra", "a21", 0))
+    df = pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+    hub = _patient_hubness(df)
+    assert np.isclose(hub["P_a"], np.log1p(20))
+    assert np.isclose(hub["P_b"], np.log1p(22))
+    assert hub["P_b"] > hub["P_a"]          # old weighted-mean gave P_b < P_a (saturated)
+    assert hub.index.is_unique and not hub.isna().any()
+    # the dial separates hospitals on a max-degree-dominated frame: span >> epsilon
+    a = degree_skew_split(df, n_clients=2)
+    assert set(a.index[a == 0]) == {"P_a"}   # narrow repertoire -> hospital 0
+    assert set(a.index[a == 1]) == {"P_b"}   # broad repertoire -> hospital 1
     assert degree_skew_split(df, n_clients=2).equals(a)
+    d = df.copy()
+    d["client"] = d[PK].map(a)
+    d["score"] = d[PK].map(hub)
+    mean_score = d.groupby("client")["score"].mean()
+    assert mean_score.iloc[-1] - mean_score.iloc[0] > 1e-3
 
 
 if __name__ == "__main__":
@@ -140,4 +171,5 @@ if __name__ == "__main__":
     test_patient_homophily_clustered_vs_scattered()
     test_homophily_split_separates_spectrum()
     test_degree_skew_split_sparse_vs_hub()
+    test_hubness_tracks_breadth_not_max_org_degree()
     print("OK: partition unit tests passed.")

@@ -11,7 +11,7 @@ returned object is a Series indexed by patient id -> hospital label. A patient's
 ICU>ER>IP>OP, else NONE) — the worst-value-in-window convention used by ICU
 severity scores.
 
-Pure pandas/numpy (no torch) — runs and is verifiable on any stack.
+Pure pandas/numpy; networkx optional, lazy. No torch — runs and is verifiable on any stack.
 """
 from __future__ import annotations
 
@@ -130,25 +130,20 @@ def homophily_split(df: pd.DataFrame, n_clients: int = 5,
 
 
 def _patient_hubness(df: pd.DataFrame) -> pd.Series:
-    """Per-patient hubness = triple-weighted mean of their organisms' tested-degree
-    (# distinct antibiotics each bug was tested against). NaN-free."""
-    d = df[[PK, ORG, ABX]]
-    org_deg = d.groupby(ORG)[ABX].nunique().rename("deg")
-    w = (d.groupby([PK, ORG]).size().rename("w").reset_index()
-         .merge(org_deg, on=ORG))
-    w["prod"] = w["w"] * w["deg"]
-    g = w.groupby(PK).agg(w=("w", "sum"), prod=("prod", "sum"))
-    return (g["prod"] / g["w"]).astype(float)
+    """Per-patient drug-repertoire breadth = log1p(# distinct antibiotics across the
+    patient's tested edges). Grows with real breadth; bounded, no plateau at any single
+    organism's tested-degree. NaN-free."""
+    return np.log1p(df.groupby(PK)[ABX].nunique()).astype(float)
 
 
 def degree_skew_split(df: pd.DataFrame, n_clients: int = 5,
                       seed: int = config.SEED) -> pd.Series:
     """Topology distribution skew (OpenFGL 2024): hospitals differ in graph degree.
 
-    Each patient is scored by the triple-weighted mean tested-degree of their
-    organisms; patients are ranked and assigned to contiguous, balanced blocks.
-    Hospital 0 = SPARSE (rare bugs, few tested edges), hospital k-1 = HUB-heavy
-    (common bugs tested against most antibiotics) — contrasting degree distributions
+    Each patient is scored by their drug-repertoire breadth (# distinct antibiotics
+    across their tested edges, log1p-transformed); patients are ranked and assigned
+    to contiguous, balanced blocks. Hospital 0 = SPARSE (1-abx patients), hospital
+    k-1 = HUB-heavy (broad-repertoire patients) — contrasting degree distributions
     the shared GNN cannot fit equally. `seed` unused (deterministic).
     Returns Series index=patient -> client id."""
     return _rank_bucket_split(_patient_hubness(df), n_clients)
