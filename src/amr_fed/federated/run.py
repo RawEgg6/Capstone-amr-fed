@@ -26,6 +26,22 @@ from .task import (
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
 
 
+def _call_partition(partition_fn, df, seed):
+    """Call a partition function with the right arity. Public contract is
+    partition_fn(df, seed), but baselines vary: specimen_baseline(df) takes only df,
+    the notebook uses 2-arg lambdas, and the topology splits take (df, n_clients, seed).
+    Dispatch on the signature so all of them work identically."""
+    import inspect
+    sig = inspect.signature(partition_fn)
+    params = list(sig.parameters.values())
+    n_required = sum(1 for p in params if p.default is inspect.Parameter.empty)
+    if "seed" in sig.parameters:
+        return partition_fn(df, seed=seed)
+    if n_required >= 2:
+        return partition_fn(df, seed)
+    return partition_fn(df)
+
+
 def _wavg_finite(vals, weights) -> float:
     """Weighted mean over finite entries (skips None / NaN); NaN if none are finite.
     Used for AUROC, which is NaN for any single-class hospital."""
@@ -129,7 +145,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     torch.manual_seed(seed)
     df = load_cohort_frame() if df is None else df
     raw = (dirichlet_ward_mixture(df, n_clients=n_clients, alpha=alpha, seed=seed)
-           if partition_fn is None else partition_fn(df, seed))
+           if partition_fn is None else _call_partition(partition_fn, df, seed))
     codes, _ = pd.factorize(raw)                 # str/int client labels -> 0..k-1
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
