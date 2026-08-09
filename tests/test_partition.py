@@ -7,7 +7,10 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.data_loader import PK, ORG, ABX
-from amr_fed.partition import WARD_COL, _apportion, assign_home_ward, dirichlet_ward_mixture
+from amr_fed.partition import (
+    WARD_COL, _apportion, assign_home_ward, dirichlet_ward_mixture,
+    _quadrant_assign, _residualize, topology_split,
+)
 
 
 def test_assign_home_ward_priority():
@@ -162,6 +165,107 @@ def test_hubness_tracks_breadth_not_max_org_degree():
     assert mean_score.iloc[-1] - mean_score.iloc[0] > 1e-3
 
 
+def _corner_scores():
+    """4 groups x 4 patients at extreme (hom, hub) corners -> cells 0..3.
+    s = scattered+sparse, h = scattered+hub, c = clustered+sparse, b = clustered+hub."""
+    idx = [f"{g}{i}" for g in "shcb" for i in range(4)]
+    hom = pd.Series([-1.0] * 8 + [1.0] * 8, index=idx)          # s,h low ; c,b high
+    hub = pd.Series([0.0] * 4 + [3.0] * 4 + [0.0] * 4 + [3.0] * 4, index=idx)
+    return hom, hub
+
+
+def test_quadrant_assign_corners_1_to_1():
+    hom, hub = _corner_scores()
+    a = _quadrant_assign(hom, hub, 4, 0.0, 42)
+    assert a.index.is_unique and len(a) == 16
+    # each extreme group lands exactly in its corner id (1:1)
+    for group, cell in {"s": 0, "h": 1, "c": 2, "b": 3}.items():
+        assert set(a.index[a == cell]) == {f"{group}{i}" for i in range(4)}
+    # balanced: 4 patients per corner
+    assert list(a.value_counts().sort_index()) == [4, 4, 4, 4]
+    # deterministic
+    assert _quadrant_assign(hom, hub, 4, 0.0, 42).equals(a)
+
+
+def test_quadrant_assign_n8():
+    hom, hub = _corner_scores()
+    a = _quadrant_assign(hom, hub, 8, 0.0, 42)
+    assert a.index.is_unique and len(a) == 16
+    assert set(a.unique()) == set(range(8))
+    assert list(a.value_counts().sort_index()) == [2] * 8        # 8 balanced hospitals
+    # each corner's 4 patients split across hospitals {2*cell, 2*cell+1}
+    for group, cell in {"s": 0, "h": 1, "c": 2, "b": 3}.items():
+        assert set(a.loc[[f"{group}{i}" for i in range(4)]]) == {2 * cell, 2 * cell + 1}
+
+
+def test_quadrant_assign_purity_deterministic():
+    hom, hub = _corner_scores()
+    clean = _quadrant_assign(hom, hub, 4, 0.0, 42)
+    a1 = _quadrant_assign(hom, hub, 4, 1.0, 42)
+    a1b = _quadrant_assign(hom, hub, 4, 1.0, 42)
+    assert not a1.equals(clean)                   # full noise scrambles the corner labels
+    assert a1.equals(a1b)                         # deterministic across same seed
+    assert set(a1.unique()) <= set(range(4))      # ids stay in [0, n_clients)
+
+
+def test_quadrant_assign_guards():
+    hom, hub = _corner_scores()
+    for bad_n in (3, 6):                          # <4 and not a multiple of 4
+        try:
+            _quadrant_assign(hom, hub, bad_n, 0.0, 42)
+            raise AssertionError(f"n_clients={bad_n} should raise")
+        except ValueError:
+            pass
+    try:
+        _quadrant_assign(hom, hub, 4, 1.5, 42)
+        raise AssertionError("purity=1.5 should raise")
+    except ValueError:
+        pass
+
+
+def _quadrant_frame():
+    """8 patients in the four (homophily, hubness) quadrants.
+    o_clust edges all-resistant (dev +0.25); o_mix half/half (dev -0.35). Sparse patients
+    see 1 distinct antibiotic (hub log1p(1)), hubs see 2 (hub log1p(2))."""
+    rows = [
+        # s = scattered + sparse (1 abx on mixed organism)
+        ("s1", "o_mix", "aS1", 0), ("s2", "o_mix", "aS2", 0),
+        # h = scattered + hub (2 abx on mixed organism)
+        ("h1", "o_mix", "aH1", 0), ("h1", "o_mix", "aH2", 1),
+        ("h2", "o_mix", "aH3", 1), ("h2", "o_mix", "aH4", 1),
+        # c = clustered + sparse (1 abx on clustered organism)
+        ("c1", "o_clust", "aC1", 1), ("c2", "o_clust", "aC2", 1),
+        # b = clustered + hub (2 abx on clustered organism)
+        ("b1", "o_clust", "aB1", 1), ("b1", "o_clust", "aB2", 1),
+        ("b2", "o_clust", "aB3", 1), ("b2", "o_clust", "aB4", 1),
+    ]
+    return pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+
+
+def test_topology_split_wrapper():
+    df = _quadrant_frame()
+    a = topology_split(df, n_clients=4)
+    assert a.index.is_unique and len(a) == 8
+    assert set(a.unique()) == {0, 1, 2, 3}
+    for group, cell in {"s": 0, "h": 1, "c": 2, "b": 3}.items():
+        assert set(a.index[a == cell]) == {f"{group}{i}" for i in (1, 2)}
+    assert topology_split(df, n_clients=4).equals(a)            # deterministic
+
+
+def test_residualize_decorrelates():
+    # hub correlates with hom, so raw median-split b_sign tracks a_sign; residualizing
+    # hub on hom removes the shared trend -> the decorrelated b_sign reorders patients.
+    idx = [f"p{i}" for i in range(16)]
+    hom = pd.Series(np.arange(16, dtype=float), index=idx)
+    hub = pd.Series([1, 2, 3, 4, 5, 6, 8, 9, 4, 5, 6, 7, 8, 9, 11, 12], index=idx, dtype=float)
+    raw = _quadrant_assign(hom, hub, 4, 0.0, 42)
+    dec = _quadrant_assign(hom, _residualize(hub, hom), 4, 0.0, 42)
+    raw_b = (raw % 2).to_numpy()      # hub quadrant iff hospital id is odd (m=1 -> cell)
+    dec_b = (dec % 2).to_numpy()
+    assert not np.array_equal(raw_b, dec_b)     # decorrelation changed the hub ordering
+    assert _quadrant_assign(hom, _residualize(hub, hom), 4, 0.0, 42).equals(dec)
+
+
 if __name__ == "__main__":
     test_assign_home_ward_priority()
     test_apportion_sums_to_n()
@@ -172,4 +276,10 @@ if __name__ == "__main__":
     test_homophily_split_separates_spectrum()
     test_degree_skew_split_sparse_vs_hub()
     test_hubness_tracks_breadth_not_max_org_degree()
+    test_quadrant_assign_corners_1_to_1()
+    test_quadrant_assign_n8()
+    test_quadrant_assign_purity_deterministic()
+    test_quadrant_assign_guards()
+    test_topology_split_wrapper()
+    test_residualize_decorrelates()
     print("OK: partition unit tests passed.")

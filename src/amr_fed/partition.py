@@ -149,6 +149,105 @@ def degree_skew_split(df: pd.DataFrame, n_clients: int = 5,
     return _rank_bucket_split(_patient_hubness(df), n_clients)
 
 
+def _robust_z(s: pd.Series) -> pd.Series:
+    """Robust z-score: (s - median) / max(MAD, std, 1.0). All-identical -> zeros.
+
+    MAD = median absolute deviation; the /1.0 floor keeps near-constant axes from
+    amplifying floating-point noise into fake signal. NaN-safe (single-value/empty axes
+    fall through to the 1.0 floor)."""
+    med = s.median()
+    mad = (s - med).abs().median()
+    std = s.std(ddof=0)
+    denom = 1.0
+    for v in (mad, std):
+        if v == v:                       # not NaN
+            denom = max(denom, v)
+    return (s - med) / denom
+
+
+def _residualize(y: pd.Series, x: pd.Series) -> pd.Series:
+    """Return y with its OLS linear dependence on x removed: y - OLS_fit(y ~ x).
+
+    Constant x (var == 0) carries no signal to remove -> y returned unchanged.
+    Series are aligned on y's index. Deterministic."""
+    x = x.reindex(y.index)
+    if np.var(x) == 0:
+        return y
+    b = float(np.cov(x, y, ddof=0)[0, 1] / np.var(x, ddof=0))
+    a = float(y.mean()) - b * float(x.mean())
+    return y - (a + b * x)
+
+
+def _quadrant_assign(hom: pd.Series, hub: pd.Series, n_clients: int,
+                     purity: float, seed: int) -> pd.Series:
+    """Cross homophily x hubness into four structural quadrants (FedGTA / AdaFGL 2-D).
+
+    Each axis is median-split on first-ranks (rank tie-break deterministic) -> a_sign
+    (1 = above-median homophily = 'clustered') and b_sign (1 = above-median hubness =
+    'hub'); cell = 2*a_sign + b_sign, so 0 = scattered+sparse, 1 = scattered+hub,
+    2 = clustered+sparse, 3 = clustered+hub (opposite corners). n_clients must be a
+    multiple of 4 with m = n_clients // 4 hospitals per quadrant; within each cell the
+    patients are ranked by za + zb (robust z of each axis, so the two scales are
+    comparable) and split into m balanced hospitals via _rank_bucket_split ->
+    hospital = cell*m + bucket. `purity` in [0, 1] softens the hard split: with that
+    probability a patient is reassigned to a uniform random hospital (np.random.default_rng(seed);
+    purity=1.0 = fully uniform). Guards: purity outside [0,1], n_clients % 4 != 0, or any
+    quadrant with < m patients -> ValueError.
+    Returns Series index=patient -> client id."""
+    if not (0.0 <= purity <= 1.0):
+        raise ValueError(f"purity must be in [0, 1], got {purity}")
+    if n_clients < 4 or n_clients % 4 != 0:
+        raise ValueError(
+            f"n_clients must be a multiple of 4 (>= 4), got {n_clients} "
+            f"(each quadrant needs n_clients // 4 hospitals)"
+        )
+    m = n_clients // 4
+    a_rank = hom.rank(method="first")
+    b_rank = hub.rank(method="first")
+    a_sign = (a_rank > a_rank.median()).astype(np.int8)
+    b_sign = (b_rank > b_rank.median()).astype(np.int8)
+    cell = (2 * a_sign + b_sign).astype(np.int64)
+    za = _robust_z(hom)
+    zb = _robust_z(hub)
+    counts = cell.value_counts()
+    missing = [c for c in range(4) if counts.get(c, 0) < m]
+    if missing:
+        raise ValueError(
+            f"each quadrant needs >= m={m} patients but quadrants {missing} have fewer; "
+            f"quadrant patient counts: {counts.to_dict()}"
+        )
+    assignment = pd.Series(-1, index=cell.index, dtype="int64")
+    for c in range(4):
+        mask = cell == c
+        bucket = _rank_bucket_split(za[mask] + zb[mask], m)
+        assignment[mask] = (c * m + bucket).to_numpy()
+    if purity > 0.0:
+        rng = np.random.default_rng(seed)
+        noisy = rng.random(len(assignment)) < purity
+        if noisy.any():
+            assignment[noisy] = rng.integers(0, n_clients, size=int(noisy.sum()))
+    return assignment
+
+
+def topology_split(df: pd.DataFrame, n_clients: int = 4, purity: float = 0.0,
+                   seed: int = config.SEED, decorrelate: bool = False) -> pd.Series:
+    """2-D crossed structural split (FedGTA / AdaFGL): homophily x hubness quadrants.
+
+    Each patient is scored on both axes — homophily (assortativity-style resistance
+    clustering of their tested edges) and hubness (drug-repertoire breadth) — and crossed
+    via _quadrant_assign into four structurally distinct hospital types: scattered+sparse,
+    scattered+hub, clustered+sparse, clustered+hub. `decorrelate=True` residualizes hubness
+    on homophily first (the axes correlate: broad-repertoire patients tend to see clustered
+    bugs), so the hub quadrant is the *independent* breadth signal. `purity` in [0, 1]
+    softens the hard split toward uniform assignment. Deterministic (seed).
+    Returns Series index=patient -> client id."""
+    hom = _patient_homophily(df)
+    hub = _patient_hubness(df)
+    if decorrelate:
+        hub = _residualize(hub, hom)
+    return _quadrant_assign(hom, hub, n_clients, purity, seed)
+
+
 def dirichlet_ward_mixture(df: pd.DataFrame, n_clients: int = 5, alpha: float = 0.5,
                            seed: int = config.SEED) -> pd.Series:
     """Assign each patient to one of n_clients hospitals via a Dirichlet(alpha)
