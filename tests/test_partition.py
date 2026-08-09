@@ -8,8 +8,9 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.data_loader import PK, ORG, ABX
 from amr_fed.partition import (
-    WARD_COL, _apportion, _greedy_pack, assign_home_ward, dirichlet_ward_mixture,
-    louvain_split, organism_community, _quadrant_assign, _residualize, topology_split,
+    WARD_COL, _apportion, _call_partition, _greedy_pack, assign_home_ward,
+    dirichlet_ward_mixture, louvain_split, organism_community, _quadrant_assign,
+    _residualize, topology_split,
 )
 
 
@@ -339,6 +340,67 @@ def test_partition_imports_without_networkx():
     assert not hasattr(mod, "nx")                          # networkx never a module attribute
 
 
+def _call_partition_frame(n_per_quadrant: int = 8) -> pd.DataFrame:
+    """n_per_quadrant patients in each of the 4 (homophily, hubness) quadrants.
+    s = scattered+sparse, h = scattered+hub, c = clustered+sparse, b = clustered+hub.
+    Each quadrant lands in its own _quadrant_assign cell (s->0, h->1, c->2, b->3), so
+    topology_split sees >= n_per_quadrant patients per quadrant."""
+    rows = []
+    for i in range(n_per_quadrant):
+        rows.append((f"s{i}", "o_mix", f"aS{i}", 0))        # scattered + sparse (1 abx)
+        rows.append((f"h{i}", "o_mix", f"aH{i}A", 0))       # scattered + hub (2 abx)
+        rows.append((f"h{i}", "o_mix", f"aH{i}B", 1))
+        rows.append((f"c{i}", "o_clust", f"aC{i}", 1))      # clustered + sparse (1 abx)
+        rows.append((f"b{i}", "o_clust", f"aB{i}A", 1))     # clustered + hub (2 abx)
+        rows.append((f"b{i}", "o_clust", f"aB{i}B", 1))
+    return pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+
+
+def test_call_partition_4_param_split():
+    df = _call_partition_frame(n_per_quadrant=8)            # 32 patients, 8 per quadrant
+    a = _call_partition(topology_split, df, n_clients=8, seed=42)
+    assert a.index.is_unique and len(a) == 32               # 1:1, no leakage
+    assert a.max() + 1 == 8                                 # all 8 hospitals populated
+    assert topology_split(df, n_clients=8, seed=42).equals(a)   # n_clients/seed forwarded
+
+
+def test_call_partition_n_clients_injection():
+    df = _call_partition_frame(n_per_quadrant=4)            # 16 patients
+    a = _call_partition(homophily_split, df, n_clients=8, seed=42)
+    assert a.max() + 1 == 8                                 # n_clients is now LIVE (was dead)
+
+
+def test_call_partition_seed_only():
+    df = _call_partition_frame(n_per_quadrant=4)            # 16 patients (>= 10)
+    a = _call_partition(homophily_split, df, seed=42)
+    assert a.max() + 1 == 5                                 # split's own default n_clients=5
+
+
+def test_call_partition_legacy_lambda():
+    df_simple = pd.DataFrame({PK: ["p1", "p2", "p3"]})
+    out = _call_partition(lambda d, s: pd.Series(s, index=d[PK]), df_simple, seed=42)
+    assert (out.index == df_simple[PK]).all()               # legacy (df, seed) 2-arg dispatch
+    assert (out == 42).all()
+
+
+def test_call_partition_one_arg():
+    def specimen_baseline(df):
+        return pd.Series("URINE", index=df[PK])
+    df_simple = pd.DataFrame({PK: ["p1", "p2"]})
+    out = _call_partition(specimen_baseline, df_simple, seed=42)
+    assert (out == "URINE").all() and (out.index == df_simple[PK]).all()
+
+
+def test_call_partition_partial_purity():
+    from functools import partial
+    df = _call_partition_frame(n_per_quadrant=2)            # 8 patients, m=1 per quadrant
+    a = _call_partition(partial(topology_split, purity=0.3), df, n_clients=4, seed=42)
+    assert a.index.is_unique and len(a) == 8
+    assert a.max() + 1 == 4                                 # 4 hospitals
+    direct = topology_split(df, n_clients=4, purity=0.3, seed=42)
+    assert a.equals(direct)                                 # purity=0.3 survives the partial
+
+
 if __name__ == "__main__":
     test_assign_home_ward_priority()
     test_apportion_sums_to_n()
@@ -359,4 +421,10 @@ if __name__ == "__main__":
     test_organism_community_disjoint_bug_buckets()
     test_louvain_split_separates_disjoint_components()
     test_partition_imports_without_networkx()
+    test_call_partition_4_param_split()
+    test_call_partition_n_clients_injection()
+    test_call_partition_seed_only()
+    test_call_partition_legacy_lambda()
+    test_call_partition_one_arg()
+    test_call_partition_partial_purity()
     print("OK: partition unit tests passed.")

@@ -12,6 +12,14 @@ ICU>ER>IP>OP, else NONE) — the worst-value-in-window convention used by ICU
 severity scores.
 
 Pure pandas/numpy; networkx optional, lazy. No torch — runs and is verifiable on any stack.
+
+Dispatch contract (`_call_partition`): a partition_fn is invoked by KEYWORD match on its
+signature — `n_clients` is injected only when the fn declares it AND a non-None value is
+given; `seed` is injected when the fn declares a keyword named 'seed'; 2-arg (df, seed)
+lambdas and 1-arg baselines (specimen_baseline) fall back to positional calls. Footguns:
+run_fedavg's default `n_clients=5` breaks `topology_split` (needs a multiple of 4) —
+callers pass `n_clients ∈ {4, 8, ...}`; 3+-required-param lambdas must use
+`functools.partial` (only `n_clients`/`seed` are matched by name).
 """
 from __future__ import annotations
 
@@ -430,6 +438,32 @@ def alpha_sweep(df: pd.DataFrame, alphas=(0.1, 0.5, 1.0), n_clients: int = 5,
         _, non_iid = partition_summary(df, dirichlet_ward_mixture(df, n_clients, a, seed))
         rows.append({"alpha": a, "non_iid_wstd": round(non_iid, 4)})
     return pd.DataFrame(rows)
+
+
+def _call_partition(partition_fn, df, n_clients=None, seed=config.SEED):
+    """Dispatch partition_fn(df, **kw) by keyword match in its signature.
+
+    - n_clients is injected only when the fn declares it AND a non-None value is given.
+    - seed is injected when the fn declares a keyword named 'seed'.
+
+    Footguns documented in the module docstring:
+      * run_fedavg default n_clients=5 breaks topology_split (needs multiples of 4).
+      * 3+-required-param lambdas need functools.partial.
+    """
+    import inspect
+    sig = inspect.signature(partition_fn)
+    kw = {}
+    if "n_clients" in sig.parameters and n_clients is not None:
+        kw["n_clients"] = n_clients
+    if "seed" in sig.parameters:
+        kw["seed"] = seed
+    if kw:
+        return partition_fn(df, **kw)
+    n_required = sum(1 for p in sig.parameters.values()
+                     if p.default is inspect.Parameter.empty)
+    if n_required >= 2:
+        return partition_fn(df, seed)   # legacy (df, seed) lambdas
+    return partition_fn(df)             # 1-arg baselines (specimen_baseline)
 
 
 def _self_check() -> None:

@@ -15,7 +15,7 @@ import pandas as pd
 
 from .. import config
 from ..data_loader import PK, load_cohort_frame
-from ..partition import dirichlet_ward_mixture
+from ..partition import _call_partition, dirichlet_ward_mixture
 from . import client_app, server_app
 from .task import (
     DEVICE, build_and_save_clients, free_gpu, init_model_on, load_client_graph,
@@ -24,22 +24,6 @@ from .task import (
 )
 
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
-
-
-def _call_partition(partition_fn, df, seed):
-    """Call a partition function with the right arity. Public contract is
-    partition_fn(df, seed), but baselines vary: specimen_baseline(df) takes only df,
-    the notebook uses 2-arg lambdas, and the topology splits take (df, n_clients, seed).
-    Dispatch on the signature so all of them work identically."""
-    import inspect
-    sig = inspect.signature(partition_fn)
-    params = list(sig.parameters.values())
-    n_required = sum(1 for p in params if p.default is inspect.Parameter.empty)
-    if "seed" in sig.parameters:
-        return partition_fn(df, seed=seed)
-    if n_required >= 2:
-        return partition_fn(df, seed)
-    return partition_fn(df)
 
 
 def _wavg_finite(vals, weights) -> float:
@@ -135,17 +119,20 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                local_epochs: int = 6, local_only_epochs: int = 60,
                seed: int = config.SEED, patient_history: bool = True, df=None,
                partition_fn=None, label: str | None = None, compute_pooled: bool = True):
-    """partition_fn(df, seed) -> patient->client Series lets us swap the split
-    (ward-Dirichlet default, or label_dirichlet / specimen_baseline). Any client
-    labels (str/int) are normalised to contiguous 0..k-1 ids and n_clients is
-    derived from the split, so specimen (3-4 hospitals) works without extra args."""
+    """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
+    Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
+    dispatched by keyword match on its signature (see partition._call_partition): n_clients
+    and seed are injected when declared. Any client labels (str/int) are normalised to
+    contiguous 0..k-1 ids and n_clients is derived from the split, so specimen (3-4
+    hospitals) works without extra args."""
     import torch
     from flwr.simulation import run_simulation
 
     torch.manual_seed(seed)
     df = load_cohort_frame() if df is None else df
     raw = (dirichlet_ward_mixture(df, n_clients=n_clients, alpha=alpha, seed=seed)
-           if partition_fn is None else _call_partition(partition_fn, df, seed))  # n_clients comes from the split's own default when partition_fn is given
+           if partition_fn is None
+           else _call_partition(partition_fn, df, n_clients=n_clients, seed=seed))  # n_clients injected only when the split declares it (see partition._call_partition)
     codes, _ = pd.factorize(raw)                 # str/int client labels -> 0..k-1
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
@@ -230,10 +217,12 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   df=None, partition_fn=None, label: str | None = None,
                   compute_pooled: bool = True):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
-    training randomness. partition_fn(df, seed) swaps the split (default ward-Dirichlet
-    at `alpha`; pass label_dirichlet / specimen_baseline for the non-IID settings).
-    Note: n_clients is ignored when partition_fn is provided (the split determines
-    hospital count). Loads the cohort ONCE and reuses it."""
+    training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
+    pass label_dirichlet / specimen_baseline for the non-IID settings).
+    Note: n_clients is forwarded to the split only when it declares an n_clients param
+    (topology_split / homophily_split); splits without it (specimen_baseline) keep their
+    own hospital count. topology_split needs n_clients a multiple of 4, so pass e.g.
+    n_clients=4 or 8. Loads the cohort ONCE and reuses it."""
     df = load_cohort_frame() if df is None else df
     tag = label or f"alpha={alpha}"
     runs = []
