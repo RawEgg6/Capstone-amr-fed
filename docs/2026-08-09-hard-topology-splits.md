@@ -12,7 +12,7 @@
 
 - Signatures: every split is `(df: pd.DataFrame, n_clients: int = 5, seed: int = config.SEED) -> pd.Series`, `Series(index=patient -> client id 0..k-1)`.
 - Assignment is 1:1 (no patient in two hospitals, none left unassigned) and deterministic (`seed` kept for a uniform `partition_fn(df, seed)` contract but unused — the dial is seed-independent).
-- Resistance rate must stay roughly constant across hospitals (the divergence is structural, not a label-rate shift).
+- Resistance rate is a **reported covariate** (per-hospital rate + spread printed, not held constant by assert). The divergence is structural; label shift is documented alongside topology divergence — Phase 5's story is that topology-aware aggregation recovers both structurally-different AND label-shifted worst hospitals.
 - Pure pandas/numpy — `partition.py` has no torch dependency; do not import torch.
 - No new graph schema / per-client features (feature dims must stay identical for FedAvg weight alignment).
 
@@ -265,8 +265,9 @@ def homophily_split(df: pd.DataFrame, n_clients: int = 5,
     (organism, antibiotic) tested edges; patients are ranked and assigned to
     contiguous, balanced blocks. Hospital 0 = most HETEROPHILIC (resistance
     scattered), hospital k-1 = most HOMOPHILIC (resistance clustered). The deviation
-    subtracts the ambient resistance rate, so resistance RATE stays roughly constant
-    across hospitals — the divergence is structural. `seed` unused (deterministic).
+    subtracts the ambient resistance rate; resistance rate is a reported
+    covariate (printed, not constrained). The divergence is structural.
+    `seed` unused (deterministic).
     Returns Series index=patient -> client id."""
     return _rank_bucket_split(_patient_homophily(df), n_clients)
 ```
