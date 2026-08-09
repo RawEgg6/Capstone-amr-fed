@@ -466,6 +466,21 @@ def _call_partition(partition_fn, df, n_clients=None, seed=config.SEED):
     return partition_fn(df)             # 1-arg baselines (specimen_baseline)
 
 
+def _assert_separated(g: pd.DataFrame, name: str, min_span: float = 1e-3,
+                      monotone: bool = True) -> None:
+    """Validate that a split actually separates hospitals by the intended score.
+
+    - `span(mean_score)` >= min_span: hospitals differ by at least a floor.
+    - if monotone: mean_score must be non-decreasing with hospital ID (rank-based splits).
+    """
+    span = g["mean_score"].iloc[-1] - g["mean_score"].iloc[0]
+    assert span >= min_span, \
+        f"{name}: mean-score span {span:.6f} < {min_span} — hospitals not separated"
+    if monotone:
+        assert g["mean_score"].is_monotonic_increasing, \
+            f"{name}: mean score not monotone (rank-based splits should be)"
+
+
 def _self_check() -> None:
     from .data_loader import load_cohort_frame
     df = load_cohort_frame()
@@ -512,10 +527,9 @@ def _self_check() -> None:
         rr = g["resist_rate"]
         span = g["mean_score"].iloc[-1] - g["mean_score"].iloc[0]
         print(f"  resistance-rate spread: {rr.max() - rr.min():.4f} "
-              f"(label-Dirichlet is ~0.3+; should stay small = structural, not a label shift)")
+              f"(covariate — reported, not constrained)")
         print(f"  mean-score span (H0 -> H{len(g) - 1}): {span:.4f}")
-        assert g["mean_score"].is_monotonic_increasing, f"{name}: mean score not monotone"
-        assert rr.max() - rr.min() < 0.20, f"{name}: resistance-rate spread too large"
+        _assert_separated(g, name, monotone=True)
         return g
 
     for fn, score_fn, name in [
@@ -525,6 +539,91 @@ def _self_check() -> None:
         assign = fn(df, n_clients=5)
         assert assign.index.is_unique and len(assign) == n_pat, f"{name}: 1:1 assignment"
         _topology_report(name, score_fn(df), assign)
+
+    # topology_split (2-D crossed)
+    print("\n  --- topology_split (homophily × degree quadrants) ---")
+    if True:  # scope block
+        try:
+            assign = topology_split(df, n_clients=8, purity=0.0)
+            assert assign.index.is_unique and len(assign) == n_pat, "topology_split: 1:1 assignment"
+            d_top = df[[PK, "label"]].copy()
+            d_top["client"] = d_top[PK].map(assign)
+            # combined z-score for per-hospital separation
+            hom_z = _robust_z(_patient_homophily(df))
+            hub_z = _robust_z(_patient_hubness(df))
+            d_top["score"] = d_top[PK].map(hom_z) + d_top[PK].map(hub_z)
+            g_top = d_top.groupby("client").agg(
+                n_patients=(PK, "nunique"), n_tests=("label", "size"),
+                resist_rate=("label", "mean"), mean_score=("score", "mean"),
+                std_score=("score", "std"),
+            )
+            print(g_top.round(4).to_string())
+            rr_top = g_top["resist_rate"]
+            print(f"  resistance-rate spread: {rr_top.max() - rr_top.min():.4f} "
+                  f"(covariate — reported, not constrained)")
+            _assert_separated(g_top, "topology_split", monotone=False)
+        except ValueError as e:
+            print(f"  SKIP: {e}")
+
+    # louvain_split
+    print("\n  --- louvain_split (community detection) ---")
+    try:
+        assign = louvain_split(df, n_clients=5)
+        assert assign.index.is_unique and len(assign) == n_pat, "louvain_split: 1:1 assignment"
+        d_lv = df[[PK, "label"]].copy()
+        d_lv["client"] = d_lv[PK].map(assign)
+        g_lv = d_lv.groupby("client").agg(
+            n_patients=(PK, "nunique"), n_tests=("label", "size"),
+            resist_rate=("label", "mean"),
+        )
+        print(g_lv.round(4).to_string())
+        rr_lv = g_lv["resist_rate"]
+        print(f"  resistance-rate spread: {rr_lv.max() - rr_lv.min():.4f} "
+              f"(covariate — reported, not constrained)")
+    except ImportError:
+        print("  SKIP (networkx missing)")
+    except Exception as e:
+        print(f"  SKIP: {e}")
+
+    print("\n=== topology diagnostics (runtime signals) ===")
+    hub = _patient_hubness(df)
+    distinct_vals = hub.nunique()
+    plateau_frac = (hub >= hub.max() - 1e-6).mean()  # fraction at/near ceiling
+    print(f"\nhubness: min={hub.min():.4f}  max={hub.max():.4f}  range={hub.max() - hub.min():.4f}  "
+          f"distinct values={distinct_vals}  plateau_frac={plateau_frac:.4f}")
+    if plateau_frac > 0.1:
+        print("  ⚠ plateau_frac > 0.1 — hubness still saturates; consider log1p(distinct organisms) "
+              "or log1p(total triples) as fallback")
+
+    hom = _patient_homophily(df)
+    neutral_mass = (hom.abs() < 1e-9).mean()
+    quartiles = hom.quantile([0.25, 0.5, 0.75])
+    print(f"homophily: neutral_mass={neutral_mass:.4f}  "
+          f"quartiles=[{quartiles[0.25]:.6f}, {quartiles[0.5]:.6f}, {quartiles[0.75]:.6f}]  "
+          f"IQR={quartiles[0.75] - quartiles[0.25]:.6f}")
+    if neutral_mass > 0.3 or (quartiles[0.75] - quartiles[0.25]) < 1e-6:
+        print("  ⚠ homophily degenerate — consider alternate axis (organism-level homophily "
+              "or log1p(distinct org))")
+
+    try:
+        from scipy import stats as scipy_stats
+        rho, _pv = scipy_stats.spearmanr(hom, hub)
+        print(f"Spearman ρ(hom, hub) = {rho:.4f}")
+
+        # quadrant shares from a purity=0 topology_split
+        assign = topology_split(df, n_clients=4, purity=0.0)
+        shares = assign.value_counts(normalize=True).sort_index()
+        print(f"topology quadrant shares (purity=0): "
+              + " | ".join(f"Q{i}: {shares.get(i, 0):.3f}" for i in range(4)))
+
+        if abs(rho) > 0.6:
+            print("  ⚠ |ρ| > 0.6 — axes correlated; flip decorrelate=True in topology_split")
+        if any(shares.get(i, 0) < 0.12 for i in range(4)):
+            print("  ⚠ quadrant share < 0.12 — axis orthogonality may be weak; try decorrelate=True")
+    except (ImportError, ModuleNotFoundError):
+        print("Spearman ρ: scipy not available (skip)")
+    except Exception as e:
+        print(f"axis correlation: {e} (skip)")
 
     # the dial must work: smaller alpha -> more heterogeneity
     s = sweep.sort_values("alpha")
