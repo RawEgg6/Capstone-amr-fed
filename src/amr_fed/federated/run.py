@@ -145,7 +145,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     torch.manual_seed(seed)
     df = load_cohort_frame() if df is None else df
     raw = (dirichlet_ward_mixture(df, n_clients=n_clients, alpha=alpha, seed=seed)
-           if partition_fn is None else _call_partition(partition_fn, df, seed))
+           if partition_fn is None else _call_partition(partition_fn, df, seed))  # n_clients comes from the split's own default when partition_fn is given
     codes, _ = pd.factorize(raw)                 # str/int client labels -> 0..k-1
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
@@ -232,7 +232,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn(df, seed) swaps the split (default ward-Dirichlet
     at `alpha`; pass label_dirichlet / specimen_baseline for the non-IID settings).
-    Loads the cohort ONCE and reuses it."""
+    Note: n_clients is ignored when partition_fn is provided (the split determines
+    hospital count). Loads the cohort ONCE and reuses it."""
     df = load_cohort_frame() if df is None else df
     tag = label or f"alpha={alpha}"
     runs = []

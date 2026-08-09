@@ -15,6 +15,8 @@ Pure pandas/numpy (no torch) — runs and is verifiable on any stack.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -95,7 +97,11 @@ def _tested_edge_homophily(df: pd.DataFrame) -> pd.DataFrame:
     with np.errstate(divide="ignore", invalid="ignore"):
         agree_o = np.where(deg_o > 1, same_o / (deg_o - 1), np.nan)
         agree_a = np.where(deg_a > 1, same_a / (deg_a - 1), np.nan)
-    agree = np.nanmean(np.column_stack([agree_o, agree_a]), axis=1)  # one-sided OK
+    # nanmean's "Mean of empty slice" is a warnings.warn, not a numpy fp flag
+    # (np.errstate can't catch it); suppress when both deg == 1 -> all-NaN slice.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        agree = np.nanmean(np.column_stack([agree_o, agree_a]), axis=1)  # one-sided OK
     p1 = float(b.mean())
     chance = np.where(bb == 1, p1, 1.0 - p1)
     dev = np.where(np.isnan(agree), 0.0, agree - chance)             # both deg<=1 -> neutral
