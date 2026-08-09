@@ -280,12 +280,15 @@ def test_greedy_pack_balances_loads():
     assignment = _greedy_pack(counts, 3)
     assert set(assignment) == set(counts.index)              # every item assigned once
     assert all(0 <= v < 3 for v in assignment.values())
-    # exact greedy trace: c1->0, c2->1, c3->2, c4->2, c5->1
+    # exact greedy trace (largest-first): c1->0, c2->1, c3->2, c4->2, c5->1
     assert dict(assignment) == {"c1": 0, "c2": 1, "c3": 2, "c4": 2, "c5": 1}
     loads = [0, 0, 0]
     for item, size in counts.items():
         loads[assignment[item]] += size
     assert max(loads) - min(loads) <= int(counts.max())      # balanced within max item size
+    # self-contained: _greedy_pack sorts internally, so scrambled input -> same packing
+    scrambled = pd.Series({"c5": 10, "c2": 80, "c1": 100, "c4": 30, "c3": 50})
+    assert _greedy_pack(scrambled, 3) == dict(assignment)
 
 
 def test_organism_community_disjoint_bug_buckets():

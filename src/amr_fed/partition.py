@@ -297,11 +297,11 @@ def label_dirichlet(df: pd.DataFrame, n_clients: int = 5, beta: float = 0.5,
 def _greedy_pack(counts: pd.Series, n_bins: int) -> dict:
     """Pack items into n_bins bins, smallest-load-first (largest items first).
 
-    Iterates `counts` in Series order, assigning each item to the currently
+    Sorts `counts` by size descending, then assigns each item to the currently
     emptiest bin (`np.argmin(loads)`), so the load spread stays within the largest
-    item size even when sizes are skewed. Callers pass counts sorted by size
-    descending (e.g. a `Series.value_counts()`), which is the order the greedy
-    wants. Deterministic. Returns dict mapping item -> bin (int 0..n_bins-1)."""
+    item size even when sizes are skewed — self-contained, independent of caller
+    input order. Deterministic. Returns dict mapping item -> bin (int 0..n_bins-1)."""
+    counts = counts.sort_values(ascending=False)
     loads = np.zeros(n_bins)
     assignment = {}
     for item, size in counts.items():
