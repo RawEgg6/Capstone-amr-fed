@@ -36,10 +36,10 @@ def _wavg_finite(vals, weights) -> float:
     return float(np.average(v, weights=w))
 
 
-def _run_config(n_clients: int, rounds: int, local_epochs: int) -> dict:
+def _run_config(n_clients: int, rounds: int, local_epochs: int, hidden: int = 128) -> dict:
     # canonical Phase-1 architecture (best clean config from the grid)
     return {"n_clients": n_clients, "rounds": rounds, "local_epochs": local_epochs,
-            "hidden": 128, "layers": 2, "aggr": "mean"}
+            "hidden": hidden, "layers": 2, "aggr": "mean"}
 
 
 def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
@@ -116,15 +116,19 @@ def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
 
 
 def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
-               local_epochs: int = 6, local_only_epochs: int = 60,
+               local_epochs: int = 6, local_only_epochs: int | None = None,
                seed: int = config.SEED, patient_history: bool = True, df=None,
-               partition_fn=None, label: str | None = None, compute_pooled: bool = True):
+               partition_fn=None, label: str | None = None, compute_pooled: bool = True,
+               hidden: int = 128):
     """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
     Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
     dispatched by keyword match on its signature (see partition._call_partition): n_clients
     and seed are injected when declared. Any client labels (str/int) are normalised to
     contiguous 0..k-1 ids and n_clients is derived from the split, so specimen (3-4
-    hospitals) works without extra args."""
+    hospitals) works without extra args.
+    local_only_epochs defaults to rounds*local_epochs (matched budget: local-only trains
+    the same total epochs as FedAvg's per-round local epochs x rounds)."""
+    local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
     import torch
     from flwr.simulation import run_simulation
 
@@ -137,7 +141,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
     tag = label or f"alpha={alpha}"
-    cfg = _run_config(n_clients, rounds, local_epochs)
+    cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden)
     write_run_config(cfg)
     sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")
@@ -215,14 +219,17 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
 def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   local_epochs: int = 6, seeds=(42, 43, 44), patient_history: bool = True,
                   df=None, partition_fn=None, label: str | None = None,
-                  compute_pooled: bool = True):
+                  compute_pooled: bool = True, local_only_epochs: int | None = None,
+                  hidden: int = 128):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
     pass label_dirichlet / specimen_baseline for the non-IID settings).
     Note: n_clients is forwarded to the split only when it declares an n_clients param
     (topology_split / homophily_split); splits without it (specimen_baseline) keep their
     own hospital count. topology_split needs n_clients a multiple of 4, so pass e.g.
-    n_clients=4 or 8. Loads the cohort ONCE and reuses it."""
+    n_clients=4 or 8. Loads the cohort ONCE and reuses it.
+    local_only_epochs is passed straight through to run_fedavg (None = matched budget
+    rounds*local_epochs); hidden is the per-client hidden width in _run_config."""
     df = load_cohort_frame() if df is None else df
     tag = label or f"alpha={alpha}"
     runs = []
@@ -232,7 +239,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                local_epochs=local_epochs, seed=s,
                                patient_history=patient_history, df=df,
                                partition_fn=partition_fn, label=label,
-                               compute_pooled=compute_pooled))
+                               compute_pooled=compute_pooled,
+                               local_only_epochs=local_only_epochs, hidden=hidden))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN
@@ -272,3 +280,54 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "worst_gain_mean": wgmean, "worst_gain_std": wgstd,
             "pooled_auroc": pla, "local_only_auroc": loa, "fedavg_auroc_best": fba,
             "runs": runs}
+
+
+def headroom_gate(partition_fn, n_clients: int = 8, rounds: int = 6,
+                  local_epochs: int = 3, hidden: int = 64,
+                  seeds: tuple = (42, 43, 44), df=None, label: str | None = None,
+                  thresh_worst: float = 0.02, thresh_mean: float = 0.01,
+                  pooled_worst_floor: float = 0.60) -> dict:
+    """Acceptance test: is `partition_fn` hard enough for topology-aware aggregation to
+    matter? Runs multi-seed FedAvg vs pooled at a matched budget (local_only_epochs =
+    rounds*local_epochs) and checks three conditions:
+      fed_helps  -- FedAvg beats local-only (the split isn't trivially easy to train alone)
+      gap_ok     -- pooled beats FedAvg by a meaningful margin on the worst hospital
+                    (thresh_worst) OR on the mean (thresh_mean): headroom exists to chase
+      pooled_ok  -- pooled itself clears pooled_worst_floor, so the split is hard but not
+                    hopeless (a sub-0.60 worst hospital leaves no signal worth pooling)
+    Prints PASS/FAIL with mean +/- std over seeds, per-condition hints on failure, and
+    returns the verdict plus all numbers for the calibration notebook."""
+    res = run_multiseed(partition_fn=partition_fn, n_clients=n_clients, rounds=rounds,
+                        local_epochs=local_epochs, local_only_epochs=rounds * local_epochs,
+                        hidden=hidden, seeds=seeds, df=df, label=label,
+                        compute_pooled=True)
+    pooled = res["pooled"]
+    pooled_worst = res["pooled_worst"]
+    fed = res["fedavg_best"]
+    worst_fed = res["worst_fed"]
+    local = res["local_only"]
+
+    fed_helps = fed[0] > local[0]                                  # FedAvg beats local-only
+    gap_ok = (worst_fed[0] <= pooled_worst[0] - thresh_worst) or (fed[0] <= pooled[0] - thresh_mean)
+    pooled_ok = pooled_worst[0] >= pooled_worst_floor
+    passed = fed_helps and gap_ok and pooled_ok
+
+    def _fmt(v):
+        return f"{v[0]} +/- {v[1]}" if v[0] is not None else "n/a"
+
+    print(f"headroom_gate: {'PASS' if passed else 'FAIL'}  (mean +/- std over {len(seeds)} seeds)")
+    print(f"  pooled       : {_fmt(pooled)}   worst {_fmt(pooled_worst)}")
+    print(f"  fedavg_best  : {_fmt(fed)}   worst-hospital {_fmt(worst_fed)}")
+    print(f"  local_only   : {_fmt(local)}")
+    print(f"  fed > local  : {fed_helps} | worst gap: {_fmt(worst_fed)} <= {_fmt(pooled_worst)} - {thresh_worst} "
+          f"| mean gap: {_fmt(fed)} <= {_fmt(pooled)} - {thresh_mean} | pooled_worst >= {pooled_worst_floor}: {pooled_ok}")
+    if not fed_helps:
+        print("  fed_helps: FedAvg does not beat local-only -> raise purity (0.2), rounds (8), or local_epochs (4)")
+    if not gap_ok:
+        print("  gap too small -> lower purity (0.0), try hidden=32, or rounds=4")
+    if not pooled_ok:
+        print("  pooled weak (pooled_worst < 0.60) -> widen hidden to 128, reduce n_clients to 4")
+
+    return {"pass": passed, "pooled": pooled, "pooled_worst": pooled_worst,
+            "fedavg_best": fed, "local_only": local, "worst_fed": worst_fed,
+            "runs": res}
