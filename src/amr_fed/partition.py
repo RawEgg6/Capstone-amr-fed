@@ -466,6 +466,45 @@ def prior_abx_exposure_split(df: pd.DataFrame, n_clients: int = 4,
     return _rank_bucket_split(score, n_clients)
 
 
+def prior_abx_binary_split(df: pd.DataFrame,
+                            seed: int = config.SEED) -> pd.Series:
+    """Extreme 2-hospital prior-ABX split at the natural ZERO boundary.
+
+    - Hospital 0 = patients with **zero** recorded prior antibiotic exposures
+      (truly ABX-naive: no prior-ABX record in abx_class_exposure at all)
+    - Hospital 1 = patients with **any** prior antibiotic exposure (score > 0)
+
+    This is harder than `prior_abx_exposure_split(n_clients=2)`, which would
+    split at the median (giving two roughly-equal groups of light and heavy
+    users). The zero boundary is a real clinical divide:
+    - Naive patients: community-acquired infections, lower resistance rates,
+      susceptible-dominant, simple drug histories.
+    - Exposed patients: healthcare-associated infections, selection-pressure-
+      driven resistance, broad-spectrum drug histories.
+
+    The groups are typically unequal in size (~35-45% naive / ~55-65% exposed
+    depending on the cohort slice), making size-imbalance an additional source
+    of non-IID signal. FedAvg's uniform averaging imports the "resistance is
+    common" signal from the exposed majority directly into the naive hospital's
+    model — the maximum possible negative transfer scenario.
+
+    `seed` unused (deterministic hard threshold). Kept for uniform signature.
+    Returns Series index=patient_id -> 0 (naive) or 1 (exposed).
+    """
+    score = _patient_prior_abx_score(df)
+    assignment = (score > 0).astype(int)
+    assignment.name = "hospital"
+    n_naive = int((assignment == 0).sum())
+    n_exposed = int((assignment == 1).sum())
+    if n_naive == 0 or n_exposed == 0:
+        raise ValueError(
+            f"prior_abx_binary_split: one group is empty "
+            f"(naive={n_naive}, exposed={n_exposed}). "
+            f"Check that the abx_class_exp table covers these patients."
+        )
+    return assignment
+
+
 def ward_baseline(df: pd.DataFrame) -> pd.Series:
     """Baseline split: each home ward is its own hospital (patient -> ward)."""
     return assign_home_ward(df)
