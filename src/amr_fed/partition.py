@@ -400,106 +400,95 @@ def organism_community(df: pd.DataFrame, n_clients: int = 5,
     return home_org.map(org_to_client)
 
 
-def _abx_name_to_family(name: str) -> str:
-    """Map a tested antibiotic name (cohort ABX column) to a broad drug-family label.
+def _patient_abx_markers(df: pd.DataFrame) -> pd.DataFrame:
+    """For each patient, compute boolean presence of key marker antibiotics.
 
-    Uses conservative keyword-stem matching on lowercase antibiotic names.  The
-    ARMD cohort has ~54 tested antibiotics following standard generic naming, so
-    stems reliably identify the pharmacological class.
+    Clinical antibiotic panels always include 3-4 beta-lactam agents (e.g.
+    Ampicillin, Cefazolin, Ceftriaxone, Meropenem on the same blood culture).
+    The 'dominant family' approach will therefore ALWAYS return beta_lactam for
+    most patients — the correct strategy is a PRIORITY HIERARCHY on specific
+    MARKER antibiotics that are only ordered when the clinical picture warrants:
 
-    Families (in order of clinical distinctiveness):
-      beta_lactam   -- penicillins, cephalosporins, carbapenems, monobactams
-      fluoroquinol  -- all -floxacin drugs
-      glyco_amino   -- glycopeptides (vancomycin = MRSA) + aminoglycosides (serious)
-      combo_sulfa   -- combination antibiotics (pip-tazo), sulfonamides (TMP-SMX)
-      other         -- macrolides, tetracyclines, nitrofurans, nitroimidazoles, etc.
+      vancomycin_tested  -- panel includes vancomycin (gram-positive / MRSA concern)
+      carbapenem_tested  -- panel includes meropenem/imipenem/ertapenem (severe gram-neg)
+      nitrofuran_tested  -- panel includes nitrofurantoin (UTI-specific panel)
+      quinolone_tested   -- panel includes any -floxacin (community/respiratory panel)
 
-    Returns one of the 5 family label strings above.
+    Returns DataFrame index=patient_id with boolean columns for each marker.
     """
-    s = str(name).lower()
-    # Beta-lactam: penicillins (-cillin), cephalosporins (cef-/ceph-),
-    # carbapenems (-penem), beta-lactam combos (tazobactam/clavulanate are
-    # always paired with a beta-lactam so the whole combo counts here unless
-    # we see "piperacillin" as a distinct combo hospital)
-    if any(x in s for x in ["cillin", "cef", "ceph", "cefo", "penem",
-                              "bactam", "aztreonam", "loracarbef"]):
-        return "beta_lactam"
-    # Fluoroquinolones: all end in -floxacin
-    if "floxacin" in s:
-        return "fluoroquinol"
-    # Glycopeptides + aminoglycosides (both = serious/hospital-acquired infections)
-    if any(x in s for x in ["vancomycin", "teicoplanin", "daptomycin",
-                              "oritavancin", "televancin"]):
-        return "glyco_amino"
-    if any(x in s for x in ["gentami", "tobra", "amika", "strepto", "neomy",
-                              "kana", "plazomi", "netilmi"]):
-        return "glyco_amino"
-    # Combination / sulfonamide: TMP-SMX, piperacillin-tazobactam, amox-clav
-    if any(x in s for x in ["sulfamethoxazole", "trimethoprim", "sulfadiazine",
-                              "piperacillin", "amoxicillin/clav", "ampicillin/sul"]):
-        return "combo_sulfa"
-    # Everything else → other (macrolides, tetracyclines, nitrofurans,
-    # nitroimidazoles, lincosamides, oxazolidinones, ansamycins, etc.)
-    return "other"
+    s = df[ABX].astype(str).str.lower()
+    d = pd.DataFrame({PK: df[PK].to_numpy()})
+    d["van"]   = s.str.contains("vancomycin", regex=False)
+    d["carb"]  = s.str.contains("penem", regex=False)
+    d["nitro"] = s.str.contains("nitrofurantoin", regex=False)
+    d["quin"]  = s.str.contains("floxacin", regex=False)
+    return d.groupby(PK)[["van", "carb", "nitro", "quin"]].any()
 
 
 def antibiotic_family_split(df: pd.DataFrame, n_clients: int = 5,
                              seed: int = config.SEED) -> pd.Series:
-    """Non-IID split on the *tested* antibiotic drug family (output-space non-IID).
+    """Non-IID split by clinical antibiotic panel type — priority marker hierarchy.
 
-    For each patient, finds their dominant tested antibiotic drug family (the
-    class of antibiotic their cultures were most frequently tested against).
-    Assigns:
-      H0  beta_lactam  -- penicillins, cephalosporins, carbapenems
-      H1  fluoroquinol -- ciprofloxacin, levofloxacin, ...
-      H2  glyco_amino  -- vancomycin (MRSA/serious), aminoglycosides
-      H3  combo_sulfa  -- TMP-SMX, piperacillin-taz, amox-clav
-      H4  other        -- macrolides, tetracyclines, nitrofurans, etc.
+    Assigns each patient to a hospital based on the most clinically distinctive
+    antibiotic in their tested panel, using a strict priority order (highest →
+    lowest) so each patient lands in exactly one hospital:
 
-    **Why this creates the strongest possible structural non-IID:**
-    The antibiotic node is the *prediction output* — the GNN decoder scores
-    (h_patient, h_organism, h_antibiotic) -> P(resistant). Hospitals H0..H4
-    see almost entirely DISJOINT antibiotic nodes. FedAvg averages the antibiotic
-    node embeddings across all hospitals, but each hospital's embeddings reflect
-    its own drug class's resistance landscape:
-      - H0 (beta-lactams): ESBL/carbapenemase-driven resistance patterns
-      - H2 (glycopeptides): MRSA/VRE patterns (completely different organisms)
-    Averaging these is equivalent to mixing up MRSA and UTI resistance priors.
-    This is the maximum possible negative-transfer scenario for a graph-decoder.
+      H0  vancomycin panel  -- gram-positive / MRSA concern (blood/wound)
+      H1  carbapenem panel  -- severe gram-neg / ESBL (blood/respiratory/ICU)
+                               (excludes patients already in H0)
+      H2  nitrofurantoin    -- UTI-specific panel (community UTI, outpatient)
+                               (excludes H0 and H1)
+      H3  fluoroquinolone   -- respiratory / community UTI without UTI-specific drug
+                               (excludes H0–H2)
+      H4  first-line only   -- no distinctive marker: standard cephalosporins /
+                               penicillins only (e.g. wound, paediatric)
 
-    `n_clients` must be 5 (one per family). If you pass a different value a
-    ValueError is raised — the family structure is fixed by biology, not by a
-    free parameter. `seed` is unused (deterministic). Returns Series
+    **Why this works where the old mode-based split failed:**
+    Every panel includes 3–4 beta-lactam agents, so the "dominant family" is
+    always beta-lactam (84% of patients). The MARKER hierarchy instead asks
+    which clinically *meaningful* drug was added to the panel — a drug only
+    ordered when the clinical scenario warrants it:
+      - Vancomycin → the clinician suspected gram-positive/MRSA
+      - Carbapenem → the clinician suspected MDR gram-negative/ESBL
+      - Nitrofurantoin → the culture is a urine sample
+    These ORDERING DECISIONS reflect fundamentally different clinical and
+    microbial contexts → the patients genuinely come from different subgraphs.
+
+    **Expected sizes (ARMD cohort, ~67K patients):**
+      H0 ~5–10K  (all MRSA-risk cultures)
+      H1 ~8–15K  (all severe gram-neg ICU/blood cultures)
+      H2 ~20–30K (all UTI cultures — nitrofurantoin is urine-only)
+      H3 ~5–15K  (community respiratory / outpatient)
+      H4 ~5–10K  (first-line standard panels)
+
+    `n_clients` must be 5. `seed` unused (deterministic). Returns Series
     index=patient_id -> hospital id (0..4).
     """
     if n_clients != 5:
         raise ValueError(
-            f"antibiotic_family_split always produces 5 hospitals (one per drug "
-            f"family). Got n_clients={n_clients}. Pass n_clients=5 explicitly."
+            f"antibiotic_family_split always produces 5 hospitals. "
+            f"Got n_clients={n_clients}. Pass n_clients=5 explicitly."
         )
-    _FAMILY_TO_HOSP = {
-        "beta_lactam": 0,
-        "fluoroquinol": 1,
-        "glyco_amino":  2,
-        "combo_sulfa":  3,
-        "other":        4,
-    }
-    families = df[ABX].map(_abx_name_to_family)
-    # per-patient dominant tested drug family (mode; ties → alphabetical first)
-    patient_family = (
-        pd.DataFrame({PK: df[PK].to_numpy(), "fam": families.to_numpy()})
-        .groupby(PK)["fam"]
-        .agg(lambda x: x.mode().iloc[0])
-    )
-    assignment = patient_family.map(_FAMILY_TO_HOSP).astype(int)
+    markers = _patient_abx_markers(df)
+    # Priority order: vancomycin > carbapenem > nitrofurantoin > fluoroquinolone > other
+    assignment = pd.Series(4, index=markers.index, dtype="int64")  # default: H4
+    assignment[markers["quin"]]  = 3  # fluoroquinolone (overwritten by higher priority below)
+    assignment[markers["nitro"]] = 2  # nitrofurantoin
+    assignment[markers["carb"]]  = 1  # carbapenem
+    assignment[markers["van"]]   = 0  # vancomycin (highest priority, applied last)
     assignment.name = "hospital"
 
-    # Diagnostic: print family breakdown so the caller can verify the split
+    _HOSP_NAMES = {0: "vancomycin", 1: "carbapenem", 2: "nitrofuran",
+                   3: "fluoroquinol", 4: "first-line"}
     counts = assignment.value_counts().sort_index()
-    hosp_name = {v: k for k, v in _FAMILY_TO_HOSP.items()}
-    print("antibiotic_family_split hospital sizes:")
+    print("antibiotic_family_split (priority-marker) hospital sizes:")
     for h, n in counts.items():
-        print(f"  H{h} ({hosp_name[h]:15s}): {n:>7,} patients")
+        print(f"  H{h} ({_HOSP_NAMES[h]:13s}): {n:>7,} patients")
+    total = counts.sum()
+    if counts.min() < 2_000:
+        smallest_h = int(counts.idxmin())
+        print(f"  WARNING: H{smallest_h} ({_HOSP_NAMES[smallest_h]}) has only "
+              f"{counts[smallest_h]:,} patients — may give unreliable F1.")
     return assignment
 
 
