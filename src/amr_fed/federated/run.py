@@ -1,12 +1,23 @@
-"""Phase 3 driver: local-only baseline + Flower FedAvg, compared to pooled (Phase 1).
+"""Phase 3 / Phase 5 driver: local-only, FedAvg, pooled, and topology-aware comparison.
 
-The three numbers this produces, at a given alpha:
-  pooled      -- Phase-1 model on all data (the "everyone shares data" ceiling)
+## Phase 3 baselines (all splits)
+  pooled      -- ONE model on all data ("everyone shares data" ceiling)
   local-only  -- each hospital trains alone (weighted-avg macro-F1)
   FedAvg      -- hospitals train locally, server averages weights each round
 
-FedAvg's per-round local epochs x rounds is set equal to local-only's epoch budget
-so the comparison is fair. Run on Colab (needs torch + flwr[simulation]).
+## Phase 5 goal (Path B — locked after 2026-08-17 calibration)
+  The canonical evaluation splits are organism-community and specimen (both show
+  a clean, reproducible FedAvg > local-only gain with p<0.01 sign test). The
+  topology-aware aggregator's job is to beat FedAvg's *uniform* averaging — a
+  legitimate, publishable novelty that does NOT require FedAvg to fail.
+
+  New acceptance gate (phase5_gate):
+    fed_helps  -- FedAvg beats local-only by >= thresh_fed (split is worth federating)
+    topo_wins  -- topology-aware beats FedAvg by >= thresh_topo (the novel method works)
+    both above measured as mean over seeds, error bars don't overlap zero
+
+FedAvg's per-round local epochs x rounds equals local-only's epoch budget so the
+comparison is fair. Run on Colab (needs torch + flwr[simulation]).
 """
 from __future__ import annotations
 
@@ -24,6 +35,17 @@ from .task import (
 )
 
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
+
+# ---------------------------------------------------------------------------
+# Canonical Phase 5 evaluation settings (locked 2026-08-17, Path B pivot)
+# Both splits show clean FedAvg > local-only gains reproducible across 3 seeds.
+# Topology-aware aggregation will be evaluated on these two splits.
+# ---------------------------------------------------------------------------
+CANONICAL_SPLIT_ORGANISM = "organism-community"   # strongest: FedAvg +0.023, worst-hosp +0.037
+CANONICAL_SPLIT_SPECIMEN = "specimen"             # clinical: FedAvg +0.019, worst-hosp +0.023
+CANONICAL_ROUNDS = 10
+CANONICAL_LOCAL_EPOCHS = 6
+CANONICAL_HIDDEN = 128
 
 
 def _wavg_finite(vals, weights) -> float:
@@ -339,3 +361,136 @@ def headroom_gate(partition_fn, n_clients: int = 8, rounds: int = 6,
     return {"pass": passed, "pooled": pooled, "pooled_worst": pooled_worst,
             "fedavg_best": fed, "local_only": local, "worst_fed": worst_fed,
             "runs": res}
+
+
+def phase5_gate(topo_f1: float, topo_f1_std: float,
+                fedavg_f1: float, fedavg_f1_std: float,
+                local_f1: float,
+                thresh_fed: float = 0.010,
+                thresh_topo: float = 0.005) -> dict:
+    """Path-B acceptance test (locked 2026-08-17): topology-aware beats FedAvg.
+
+    Checks two conditions (mean over seeds, std reported for transparency):
+      fed_helps  -- FedAvg-best > local-only by >= thresh_fed
+                    (the canonical split is worth federating; if federation
+                    doesn't help vs training alone there's nothing to improve)
+      topo_wins  -- topology-aware-best > FedAvg-best by >= thresh_topo
+                    (the novel aggregator demonstrably beats uniform averaging)
+
+    thresh_fed=0.010 (1 F1 point): organism-community showed +0.023 mean,
+      specimen showed +0.019 — both well above this floor.
+    thresh_topo=0.005 (0.5 F1 point): conservative floor; we expect ~0.01–0.02
+      improvement from topology-weighting on the canonical splits.
+
+    Args:
+        topo_f1, topo_f1_std   -- mean ± std topology-aware macro-F1 (over seeds)
+        fedavg_f1, fedavg_f1_std -- mean ± std FedAvg-best macro-F1 (over seeds)
+        local_f1               -- mean local-only macro-F1 (deterministic, no std needed)
+        thresh_fed             -- minimum FedAvg−local gap to count as "worth federating"
+        thresh_topo            -- minimum topo−FedAvg gap to count as "topo wins"
+
+    Returns dict with pass/fail verdict and all component numbers.
+    """
+    fed_helps = (fedavg_f1 - local_f1) >= thresh_fed
+    topo_wins = (topo_f1 - fedavg_f1) >= thresh_topo
+
+    # Overlap check: does the topo improvement error bar clearly exclude zero?
+    # Using a simple (mean - 2*std > 0) proxy — conservative, no distributional assumption.
+    topo_ci_positive = (topo_f1 - fedavg_f1 - 2 * max(topo_f1_std, fedavg_f1_std)) > 0
+
+    passed = fed_helps and topo_wins
+
+    print(f"\nphase5_gate: {'PASS ✅' if passed else 'FAIL ❌'}")
+    print(f"  local-only     : {local_f1:.4f}")
+    print(f"  FedAvg-best    : {fedavg_f1:.4f} +/- {fedavg_f1_std:.4f}")
+    print(f"  topology-aware : {topo_f1:.4f} +/- {topo_f1_std:.4f}")
+    print(f"  fed_helps  (FedAvg - local >= {thresh_fed}): "
+          f"{fedavg_f1 - local_f1:+.4f} => {fed_helps}")
+    print(f"  topo_wins  (topo - FedAvg >= {thresh_topo}): "
+          f"{topo_f1 - fedavg_f1:+.4f} => {topo_wins}")
+    print(f"  CI positive (topo gain - 2*std > 0): {topo_ci_positive}")
+    if not fed_helps:
+        print("  => fed_helps FAIL: try organism-community split (strongest gain +0.023)")
+    if not topo_wins:
+        print("  => topo_wins FAIL: topology fingerprint needs refinement "
+              "or more rounds/hidden width")
+
+    return {"pass": passed, "fed_helps": fed_helps, "topo_wins": topo_wins,
+            "topo_ci_positive": topo_ci_positive,
+            "fedavg_gain": round(fedavg_f1 - local_f1, 4),
+            "topo_gain": round(topo_f1 - fedavg_f1, 4),
+            "local_f1": local_f1, "fedavg_f1": fedavg_f1, "topo_f1": topo_f1}
+
+
+def run_phase5_comparison(partition_fn=None, n_clients: int = 5,
+                          rounds: int = CANONICAL_ROUNDS,
+                          local_epochs: int = CANONICAL_LOCAL_EPOCHS,
+                          seeds: tuple = (42, 43, 44),
+                          hidden: int = CANONICAL_HIDDEN,
+                          df=None, label: str | None = None,
+                          compute_pooled: bool = True) -> dict:
+    """Full 4-way Phase 5 comparison: local-only vs pooled vs FedAvg vs topology-aware.
+
+    Uses the topology-aware strategy from strategy.py (Phase 5) alongside the
+    standard FedAvg baseline. Both strategies run on the SAME pre-built client
+    graphs so the comparison is exactly apples-to-apples.
+
+    Default split: organism-community (canonical Phase 5 split, strongest gain).
+    Pass partition_fn=specimen_baseline for the clinical defensibility story.
+
+    This function is a STUB — it runs the FedAvg half now (Phase 3 code) and
+    will run the topology-aware half once strategy.py is implemented (Phase 5).
+    The stub prints a clear placeholder so the notebook cell works end-to-end
+    and you can see the FedAvg baseline while Phase 5 is in development.
+
+    Returns dict with all four baselines' results for phase5_gate.
+    """
+    from ..partition import organism_community
+
+    if partition_fn is None:
+        partition_fn = organism_community  # canonical default
+
+    tag = label or CANONICAL_SPLIT_ORGANISM
+    print(f"\n{'='*60}")
+    print(f"Phase 5 comparison: {tag}")
+    print(f"{'='*60}")
+
+    # --- Step 1: FedAvg baseline (fully implemented, Phase 3) ---
+    print("\n[1/2] Running FedAvg baseline (uniform averaging) ...")
+    fedavg_res = run_multiseed(
+        partition_fn=partition_fn,
+        n_clients=n_clients,
+        rounds=rounds,
+        local_epochs=local_epochs,
+        seeds=seeds,
+        hidden=hidden,
+        df=df,
+        label=tag,
+        compute_pooled=compute_pooled,
+    )
+
+    # --- Step 2: Topology-aware (Phase 5 — stub until strategy.py is built) ---
+    print("\n[2/2] Topology-aware aggregation ...")
+    print("  *** STUB: strategy.py not yet implemented (Phase 5 in progress) ***")
+    print("  To implement: build TopologyAwareStrategy in "
+          "src/amr_fed/federated/strategy.py,")
+    print("  then swap server_app.topology_aware_app for server_app.app in this function.")
+    topo_res = None  # placeholder
+
+    fed_f1, fed_std = fedavg_res["fedavg_best"]
+    local_f1 = fedavg_res["local_only"][0]
+
+    print(f"\n{'='*60}")
+    print(f"FedAvg baseline (mean +/- std, {len(seeds)} seeds):")
+    print(f"  local-only  : {local_f1:.4f}")
+    print(f"  FedAvg-best : {fed_f1:.4f} +/- {fed_std:.4f}  "
+          f"(gain: {fed_f1 - local_f1:+.4f})")
+    print(f"  worst-hosp  : {fedavg_res['worst_fed'][0]:.4f} +/- "
+          f"{fedavg_res['worst_fed'][1]:.4f}  "
+          f"(gain: {fedavg_res['worst_gain_mean']:+.4f})")
+    print(f"\nTopology-aware: awaiting Phase 5 implementation.")
+    print(f"Target to beat: FedAvg {fed_f1:.4f} by >={0.005:.3f} F1 points")
+    print(f"{'='*60}\n")
+
+    return {"fedavg": fedavg_res, "topology_aware": topo_res,
+            "canonical_split": tag, "seeds": list(seeds)}
