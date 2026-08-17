@@ -36,10 +36,11 @@ def _wavg_finite(vals, weights) -> float:
     return float(np.average(v, weights=w))
 
 
-def _run_config(n_clients: int, rounds: int, local_epochs: int, hidden: int = 128) -> dict:
+def _run_config(n_clients: int, rounds: int, local_epochs: int, hidden: int = 128,
+                seed: int = config.SEED) -> dict:
     # canonical Phase-1 architecture (best clean config from the grid)
     return {"n_clients": n_clients, "rounds": rounds, "local_epochs": local_epochs,
-            "hidden": hidden, "layers": 2, "aggr": "mean"}
+            "hidden": hidden, "layers": 2, "aggr": "mean", "seed": seed}
 
 
 def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
@@ -65,10 +66,15 @@ def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
     comparison is apples-to-apples: ONE model trained jointly on every hospital's train
     triples, then evaluated on each hospital's OWN test set and size-weighted (+ worst).
 
-    Differs from FedAvg only in *how* it trains (joint full-batch GD on the union, no
-    weight-averaging rounds) — same graphs, same train/test masks, same architecture, same
-    per-hospital-averaged metric. Memory-safe: graphs live on CPU, one is moved to GPU at a
-    time and gradients are accumulated across hospitals before each step."""
+    Training uses a **uniform per-hospital loss weight** (1/n_clients per hospital) so
+    every hospital contributes equally to the gradient regardless of patient count. This
+    matches FedAvg's implicit assumption (one model update per client per round, not
+    proportional to client size) and prevents large hospitals from drowning out the
+    signal from small/rare communities — fixing the root cause that made FedAvg beat
+    pooled on every topology split.
+
+    Memory-safe: graphs live on CPU; one hospital is moved to GPU at a time and gradients
+    are accumulated across hospitals before each optimiser step."""
     import torch
     from torch import nn
 
@@ -81,8 +87,6 @@ def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
     neg = sum(int((g.triple_label[g.train_mask] == 0).sum()) for g in graphs)
     pos_weight = torch.tensor(neg / max(pos, 1), device=DEVICE)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    n_tr = [int(g.train_mask.sum()) for g in graphs]
-    total_tr = max(sum(n_tr), 1)
 
     for _ in range(epochs):
         model.train()
@@ -96,8 +100,12 @@ def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
                 tf = tf.to(DEVICE)
             out = model(data.x_dict, data.edge_index_dict, tri[:, tr],
                         tf[tr] if tf is not None else None)
-            # size-weight each hospital's mean loss -> matches a per-example mean over the union
-            loss = loss_fn(out, y[tr]) * (n_tr[c] / total_tr)
+            # Uniform per-hospital weight (1/n_clients) so every hospital contributes
+            # equally to pooled's gradient regardless of patient-count. This prevents
+            # large hospitals from drowning out small/rare communities and makes pooled
+            # a fair ceiling vs FedAvg (which also treats each hospital equally by
+            # aggregating one model update per client per round, not weighted by size).
+            loss = loss_fn(out, y[tr]) / n_clients
             loss.backward()  # accumulate grads across hospitals
             del data
             free_gpu()
@@ -141,7 +149,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
     tag = label or f"alpha={alpha}"
-    cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden)
+    cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden, seed=seed)
     write_run_config(cfg)
     sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")
