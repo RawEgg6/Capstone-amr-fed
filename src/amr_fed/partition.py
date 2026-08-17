@@ -400,6 +400,109 @@ def organism_community(df: pd.DataFrame, n_clients: int = 5,
     return home_org.map(org_to_client)
 
 
+def _abx_name_to_family(name: str) -> str:
+    """Map a tested antibiotic name (cohort ABX column) to a broad drug-family label.
+
+    Uses conservative keyword-stem matching on lowercase antibiotic names.  The
+    ARMD cohort has ~54 tested antibiotics following standard generic naming, so
+    stems reliably identify the pharmacological class.
+
+    Families (in order of clinical distinctiveness):
+      beta_lactam   -- penicillins, cephalosporins, carbapenems, monobactams
+      fluoroquinol  -- all -floxacin drugs
+      glyco_amino   -- glycopeptides (vancomycin = MRSA) + aminoglycosides (serious)
+      combo_sulfa   -- combination antibiotics (pip-tazo), sulfonamides (TMP-SMX)
+      other         -- macrolides, tetracyclines, nitrofurans, nitroimidazoles, etc.
+
+    Returns one of the 5 family label strings above.
+    """
+    s = str(name).lower()
+    # Beta-lactam: penicillins (-cillin), cephalosporins (cef-/ceph-),
+    # carbapenems (-penem), beta-lactam combos (tazobactam/clavulanate are
+    # always paired with a beta-lactam so the whole combo counts here unless
+    # we see "piperacillin" as a distinct combo hospital)
+    if any(x in s for x in ["cillin", "cef", "ceph", "cefo", "penem",
+                              "bactam", "aztreonam", "loracarbef"]):
+        return "beta_lactam"
+    # Fluoroquinolones: all end in -floxacin
+    if "floxacin" in s:
+        return "fluoroquinol"
+    # Glycopeptides + aminoglycosides (both = serious/hospital-acquired infections)
+    if any(x in s for x in ["vancomycin", "teicoplanin", "daptomycin",
+                              "oritavancin", "televancin"]):
+        return "glyco_amino"
+    if any(x in s for x in ["gentami", "tobra", "amika", "strepto", "neomy",
+                              "kana", "plazomi", "netilmi"]):
+        return "glyco_amino"
+    # Combination / sulfonamide: TMP-SMX, piperacillin-tazobactam, amox-clav
+    if any(x in s for x in ["sulfamethoxazole", "trimethoprim", "sulfadiazine",
+                              "piperacillin", "amoxicillin/clav", "ampicillin/sul"]):
+        return "combo_sulfa"
+    # Everything else → other (macrolides, tetracyclines, nitrofurans,
+    # nitroimidazoles, lincosamides, oxazolidinones, ansamycins, etc.)
+    return "other"
+
+
+def antibiotic_family_split(df: pd.DataFrame, n_clients: int = 5,
+                             seed: int = config.SEED) -> pd.Series:
+    """Non-IID split on the *tested* antibiotic drug family (output-space non-IID).
+
+    For each patient, finds their dominant tested antibiotic drug family (the
+    class of antibiotic their cultures were most frequently tested against).
+    Assigns:
+      H0  beta_lactam  -- penicillins, cephalosporins, carbapenems
+      H1  fluoroquinol -- ciprofloxacin, levofloxacin, ...
+      H2  glyco_amino  -- vancomycin (MRSA/serious), aminoglycosides
+      H3  combo_sulfa  -- TMP-SMX, piperacillin-taz, amox-clav
+      H4  other        -- macrolides, tetracyclines, nitrofurans, etc.
+
+    **Why this creates the strongest possible structural non-IID:**
+    The antibiotic node is the *prediction output* — the GNN decoder scores
+    (h_patient, h_organism, h_antibiotic) -> P(resistant). Hospitals H0..H4
+    see almost entirely DISJOINT antibiotic nodes. FedAvg averages the antibiotic
+    node embeddings across all hospitals, but each hospital's embeddings reflect
+    its own drug class's resistance landscape:
+      - H0 (beta-lactams): ESBL/carbapenemase-driven resistance patterns
+      - H2 (glycopeptides): MRSA/VRE patterns (completely different organisms)
+    Averaging these is equivalent to mixing up MRSA and UTI resistance priors.
+    This is the maximum possible negative-transfer scenario for a graph-decoder.
+
+    `n_clients` must be 5 (one per family). If you pass a different value a
+    ValueError is raised — the family structure is fixed by biology, not by a
+    free parameter. `seed` is unused (deterministic). Returns Series
+    index=patient_id -> hospital id (0..4).
+    """
+    if n_clients != 5:
+        raise ValueError(
+            f"antibiotic_family_split always produces 5 hospitals (one per drug "
+            f"family). Got n_clients={n_clients}. Pass n_clients=5 explicitly."
+        )
+    _FAMILY_TO_HOSP = {
+        "beta_lactam": 0,
+        "fluoroquinol": 1,
+        "glyco_amino":  2,
+        "combo_sulfa":  3,
+        "other":        4,
+    }
+    families = df[ABX].map(_abx_name_to_family)
+    # per-patient dominant tested drug family (mode; ties → alphabetical first)
+    patient_family = (
+        pd.DataFrame({PK: df[PK].to_numpy(), "fam": families.to_numpy()})
+        .groupby(PK)["fam"]
+        .agg(lambda x: x.mode().iloc[0])
+    )
+    assignment = patient_family.map(_FAMILY_TO_HOSP).astype(int)
+    assignment.name = "hospital"
+
+    # Diagnostic: print family breakdown so the caller can verify the split
+    counts = assignment.value_counts().sort_index()
+    hosp_name = {v: k for k, v in _FAMILY_TO_HOSP.items()}
+    print("antibiotic_family_split hospital sizes:")
+    for h, n in counts.items():
+        print(f"  H{h} ({hosp_name[h]:15s}): {n:>7,} patients")
+    return assignment
+
+
 def _patient_prior_abx_score(df: pd.DataFrame) -> pd.Series:
     """Per-patient prior antibiotic exposure breadth score.
 
