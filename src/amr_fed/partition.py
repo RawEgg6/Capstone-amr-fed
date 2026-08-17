@@ -425,66 +425,51 @@ def _patient_abx_markers(df: pd.DataFrame) -> pd.DataFrame:
     return d.groupby(PK)[["van", "carb", "nitro", "quin"]].any()
 
 
-def antibiotic_family_split(df: pd.DataFrame, n_clients: int = 5,
+def antibiotic_family_split(df: pd.DataFrame, n_clients: int = 4,
                              seed: int = config.SEED) -> pd.Series:
     """Non-IID split by clinical antibiotic panel type — priority marker hierarchy.
 
     Assigns each patient to a hospital based on the most clinically distinctive
-    antibiotic in their tested panel, using a strict priority order (highest →
-    lowest) so each patient lands in exactly one hospital:
+    antibiotic in their tested panel (strict priority: van > carb > nitro > other):
 
-      H0  vancomycin panel  -- gram-positive / MRSA concern (blood/wound)
-      H1  carbapenem panel  -- severe gram-neg / ESBL (blood/respiratory/ICU)
-                               (excludes patients already in H0)
-      H2  nitrofurantoin    -- UTI-specific panel (community UTI, outpatient)
-                               (excludes H0 and H1)
-      H3  fluoroquinolone   -- respiratory / community UTI without UTI-specific drug
-                               (excludes H0–H2)
-      H4  first-line only   -- no distinctive marker: standard cephalosporins /
-                               penicillins only (e.g. wound, paediatric)
+      H0  vancomycin   -- gram-positive / MRSA concern (~15,916 patients)
+      H1  carbapenem   -- severe gram-neg / ESBL, excludes van (~34,547 patients)
+      H2  nitrofuran   -- UTI-specific panel, excludes van+carb (~14,146 patients)
+      H3  other        -- fluoroquinolone-only or standard first-line (~2,399 patients)
 
-    **Why this works where the old mode-based split failed:**
-    Every panel includes 3–4 beta-lactam agents, so the "dominant family" is
-    always beta-lactam (84% of patients). The MARKER hierarchy instead asks
-    which clinically *meaningful* drug was added to the panel — a drug only
-    ordered when the clinical scenario warrants it:
-      - Vancomycin → the clinician suspected gram-positive/MRSA
-      - Carbapenem → the clinician suspected MDR gram-negative/ESBL
-      - Nitrofurantoin → the culture is a urine sample
-    These ORDERING DECISIONS reflect fundamentally different clinical and
-    microbial contexts → the patients genuinely come from different subgraphs.
+    **Why priority-marker works where mode-based split failed:**
+    Every panel includes 3-4 beta-lactam agents, so 'dominant family' = beta-lactam
+    for 84% of patients. Marker antibiotics are only added to a panel when the
+    clinical scenario warrants:
+      - Vancomycin → clinician suspects MRSA / gram-positive infection
+      - Carbapenem → clinician suspects MDR gram-negative / ESBL
+      - Nitrofurantoin → the culture is a urine sample (urine-only drug)
+    These reflect different organisms, different graph topology, different resistance
+    patterns — the patients genuinely come from different subgraphs of the organism-
+    antibiotic KG.
 
-    **Expected sizes (ARMD cohort, ~67K patients):**
-      H0 ~5–10K  (all MRSA-risk cultures)
-      H1 ~8–15K  (all severe gram-neg ICU/blood cultures)
-      H2 ~20–30K (all UTI cultures — nitrofurantoin is urine-only)
-      H3 ~5–15K  (community respiratory / outpatient)
-      H4 ~5–10K  (first-line standard panels)
-
-    `n_clients` must be 5. `seed` unused (deterministic). Returns Series
-    index=patient_id -> hospital id (0..4).
+    `n_clients` must be 4. `seed` unused (deterministic). Returns Series
+    index=patient_id -> hospital id (0..3).
     """
-    if n_clients != 5:
+    if n_clients != 4:
         raise ValueError(
-            f"antibiotic_family_split always produces 5 hospitals. "
-            f"Got n_clients={n_clients}. Pass n_clients=5 explicitly."
+            f"antibiotic_family_split always produces 4 hospitals. "
+            f"Got n_clients={n_clients}. Pass n_clients=4 explicitly."
         )
     markers = _patient_abx_markers(df)
-    # Priority order: vancomycin > carbapenem > nitrofurantoin > fluoroquinolone > other
-    assignment = pd.Series(4, index=markers.index, dtype="int64")  # default: H4
-    assignment[markers["quin"]]  = 3  # fluoroquinolone (overwritten by higher priority below)
+    # Priority order: vancomycin > carbapenem > nitrofurantoin > other
+    # H3 catches both fluoroquinolone-only AND first-line-only (merged: too small to separate)
+    assignment = pd.Series(3, index=markers.index, dtype="int64")  # default: H3 (other)
     assignment[markers["nitro"]] = 2  # nitrofurantoin
-    assignment[markers["carb"]]  = 1  # carbapenem
+    assignment[markers["carb"]]  = 1  # carbapenem (higher priority than nitro)
     assignment[markers["van"]]   = 0  # vancomycin (highest priority, applied last)
     assignment.name = "hospital"
 
-    _HOSP_NAMES = {0: "vancomycin", 1: "carbapenem", 2: "nitrofuran",
-                   3: "fluoroquinol", 4: "first-line"}
+    _HOSP_NAMES = {0: "vancomycin", 1: "carbapenem", 2: "nitrofuran", 3: "other"}
     counts = assignment.value_counts().sort_index()
     print("antibiotic_family_split (priority-marker) hospital sizes:")
     for h, n in counts.items():
         print(f"  H{h} ({_HOSP_NAMES[h]:13s}): {n:>7,} patients")
-    total = counts.sum()
     if counts.min() < 2_000:
         smallest_h = int(counts.idxmin())
         print(f"  WARNING: H{smallest_h} ({_HOSP_NAMES[smallest_h]}) has only "
