@@ -400,6 +400,72 @@ def organism_community(df: pd.DataFrame, n_clients: int = 5,
     return home_org.map(org_to_client)
 
 
+def _patient_prior_abx_score(df: pd.DataFrame) -> pd.Series:
+    """Per-patient prior antibiotic exposure breadth score.
+
+    Reads the antibiotic class exposure table directly (it is not loaded by
+    load_cohort_frame — it is a fan-out enrichment table used by graph_build).
+    For each patient, aggregates all prior-antibiotic records across all their
+    cultures and computes:
+
+        score = log1p(n_prior_exposures) + log1p(n_distinct_antibiotic_classes)
+
+    so the score grows with both volume and breadth of prior ABX use.  Patients
+    with zero recorded exposures (ABX-naive) get score 0.
+
+    Returns Series index=patient_id -> float score (NaN-free, all patients in df).
+    """
+    from pathlib import Path
+    fp = Path(config.DATA_DIR) / config.ARMD_TABLES["abx_class_exp"]
+    # CK = culture key (order_proc_id_coded); PK = patient key (anon_id)
+    # The exposure table is keyed by CK so we need to map back to patients via df.
+    ck = config.KEYS["culture"]
+    exp = pd.read_csv(
+        fp,
+        usecols=[ck, "antibiotic_class"],
+        low_memory=False,
+    )
+    # Map culture key -> patient key using the cohort frame (df has both CK and PK columns)
+    ck_to_pk = df[[ck, PK]].drop_duplicates(ck).set_index(ck)[PK]
+    exp[PK] = exp[ck].map(ck_to_pk)
+    exp = exp.dropna(subset=[PK])
+
+    # Aggregate per patient: total exposures + distinct antibiotic classes
+    agg = (
+        exp.groupby(PK)["antibiotic_class"]
+        .agg(n="size", nclass="nunique")
+        .reindex(df[PK].unique())
+        .fillna(0)
+    )
+    score = np.log1p(agg["n"]) + np.log1p(agg["nclass"])
+    return score.rename("prior_abx_score")
+
+
+def prior_abx_exposure_split(df: pd.DataFrame, n_clients: int = 4,
+                              seed: int = config.SEED) -> pd.Series:
+    """Non-IID split on prior antibiotic exposure breadth (mechanistic non-IID).
+
+    Ranks patients by their prior ABX exposure score (log #exposures +
+    log #distinct classes) and assigns contiguous balanced blocks:
+    - Hospital 0 = ABX-naive patients (no prior antibiotic records)
+    - Hospital k-1 = heavily and broadly antibiotic-exposed patients
+
+    **Why this creates genuine headroom for a topology-aware aggregator:**
+    Prior antibiotic use is the primary *cause* of resistance selection pressure.
+    Naive patients have a fundamentally different resistance distribution (lower
+    rates, dominated by community-acquired organisms) vs exposed patients (higher
+    resistance rates, healthcare-associated organisms). FedAvg averaging across
+    these conflicting distributions actively degrades the naive hospital (importing
+    "resistance is common" priors) and may also harm the exposed hospital (importing
+    "susceptible" priors). The label distributions *conflict*, not just differ.
+
+    `seed` is unused (deterministic rank-based split), kept for uniform signature.
+    Returns Series index=patient_id -> hospital id (0..n_clients-1).
+    """
+    score = _patient_prior_abx_score(df)
+    return _rank_bucket_split(score, n_clients)
+
+
 def ward_baseline(df: pd.DataFrame) -> pd.Series:
     """Baseline split: each home ward is its own hospital (patient -> ward)."""
     return assign_home_ward(df)
