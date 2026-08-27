@@ -23,6 +23,7 @@ from .. import config
 from ..data_loader import PK
 from ..graph_build import build_arrays, to_hetero_data
 from ..model import AMRSAGE
+from ..topology import compute_topology_fingerprint
 from ..train_local import _auroc, _macro_f1
 
 # Canonical core edge types — exactly what to_hetero_data emits for the 3 core edges
@@ -104,16 +105,27 @@ def _pad_canonical_edges(data):
 
 def build_and_save_clients(df, assignment, n_clients: int, seed: int = config.SEED,
                            patient_history: bool = True) -> list[int]:
-    """Build one core graph per hospital (patient subset), pad edges, save to disk.
-    patient_history adds the per-test prior-resistance decoder features (the Phase-1
-    winning feature) to every client. Returns per-client patient counts."""
+    """Build one core graph per hospital and save its topology fingerprint."""
     sizes = []
+
     for c in range(n_clients):
         sub = df[df[PK].map(assignment) == c]
+
+        # Compute the topology fingerprint from the private patient subset.
+        fingerprint = compute_topology_fingerprint(sub)
+
         data = _pad_canonical_edges(to_hetero_data(
-            build_arrays(sub, seed=seed, patient_history=patient_history)))
+            build_arrays(sub, seed=seed, patient_history=patient_history)
+        ))
+
+        # Store only the compact topology summary with the graph.
+        # The raw patient dataframe never leaves this process.
+        data.topology_homophily = float(fingerprint.homophily)
+        data.topology_hubness = float(fingerprint.hubness)
+
         save_client_graph(c, data)
         sizes.append(int(data["patient"].num_nodes))
+
     return sizes
 
 

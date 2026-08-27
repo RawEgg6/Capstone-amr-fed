@@ -20,18 +20,43 @@ class FlowerClient(NumPyClient):
         self.data = data
         self.cfg = cfg
         self.cid = cid
-        self.model = init_model_on(data, cfg)   # materialises lazy params
+        self.model = init_model_on(data, cfg)
+
+        # Compact topology fingerprint computed when the client graph was built.
+        self.topology_homophily = float(data.topology_homophily)
+        self.topology_hubness = float(data.topology_hubness)
 
     def fit(self, parameters, config):
         set_weights(self.model, parameters)
         local_train(self.model, self.data, self.cfg["local_epochs"])
-        return get_weights(self.model), int(self.data.train_mask.sum()), {}
+
+        metrics = {
+            "topology_homophily": self.topology_homophily,
+            "topology_hubness": self.topology_hubness,
+            "cid": self.cid,
+        }
+
+        return (
+            get_weights(self.model),
+            int(self.data.train_mask.sum()),
+            metrics,
+        )
 
     def evaluate(self, parameters, config):
         set_weights(self.model, parameters)
         f1, auc, n = local_eval(self.model, self.data, "test_mask")
-        # cid -> per-hospital breakdown; auroc alongside macro_f1
-        return 0.0, n, {"macro_f1": f1, "auroc": auc, "cid": self.cid}
+
+        return (
+            0.0,
+            n,
+            {
+                "macro_f1": f1,
+                "auroc": auc,
+                "cid": self.cid,
+                "topology_homophily": self.topology_homophily,
+                "topology_hubness": self.topology_hubness,
+            },
+        )
 
 
 def client_fn(context: Context):
