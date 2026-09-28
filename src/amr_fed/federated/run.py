@@ -20,7 +20,7 @@ from . import client_app, server_app
 from .task import (
     DEVICE, build_and_save_clients, free_gpu, init_model_on, load_client_graph,
     local_eval, local_train, read_fed_history, read_fed_records, reset_fed_history,
-    write_run_config,
+    seed_everything, write_run_config,
 )
 
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
@@ -36,10 +36,13 @@ def _wavg_finite(vals, weights) -> float:
     return float(np.average(v, weights=w))
 
 
-def _run_config(n_clients: int, rounds: int, local_epochs: int, hidden: int = 128) -> dict:
+def _run_config(n_clients: int, rounds: int, local_epochs: int, hidden: int = 128,
+                seed: int = config.SEED) -> dict:
     # canonical Phase-1 architecture (best clean config from the grid)
+    # `seed` is written to run_config.json too, so the per-client/server processes can seed
+    # themselves deterministically (see task.seed_client / task.seed_everything).
     return {"n_clients": n_clients, "rounds": rounds, "local_epochs": local_epochs,
-            "hidden": hidden, "layers": 2, "aggr": "mean"}
+            "hidden": hidden, "layers": 2, "aggr": "mean", "seed": int(seed)}
 
 
 def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
@@ -129,10 +132,9 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     local_only_epochs defaults to rounds*local_epochs (matched budget: local-only trains
     the same total epochs as FedAvg's per-round local epochs x rounds)."""
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
-    import torch
     from flwr.simulation import run_simulation
 
-    torch.manual_seed(seed)
+    seed_everything(seed)   # driver process (Ray client/server processes seed themselves)
     df = load_cohort_frame() if df is None else df
     raw = (dirichlet_ward_mixture(df, n_clients=n_clients, alpha=alpha, seed=seed)
            if partition_fn is None
@@ -141,7 +143,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
     tag = label or f"alpha={alpha}"
-    cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden)
+    cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden, seed=seed)
     write_run_config(cfg)
     sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")

@@ -11,6 +11,7 @@ via disk (fixed path) rather than in-memory globals.
 from __future__ import annotations
 
 import json
+import random
 import tempfile
 from collections import OrderedDict
 from pathlib import Path
@@ -118,6 +119,32 @@ def build_and_save_clients(df, assignment, n_clients: int, seed: int = config.SE
 
 
 # ---- model + train/eval ----------------------------------------------------
+def seed_everything(seed: int) -> None:
+    """Seed python / numpy / torch **in the current process**.
+
+    Reproducibility fix (2026): `run_fedavg` seeds the parent process, but Flower's Ray
+    simulation runs each client — and the server — in their own processes with fresh RNGs,
+    so the parent seed never reaches them. Each process must seed itself, otherwise client
+    models are initialised with different random weights every run and FedAvg is
+    non-deterministic run-to-run (the ±0.007 noise that sat above the gate's 0.01 threshold).
+    """
+    random.seed(seed)
+    np.random.seed(int(seed) % (2 ** 32))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def client_seed(cfg: dict, cid: int) -> int:
+    """Deterministic per-client seed: distinct per hospital, identical across runs."""
+    return int(cfg.get("seed", config.SEED)) + int(cid)
+
+
+def seed_client(cfg: dict, cid: int) -> None:
+    """Seed a client process from its (seed + cid). Call before building the model."""
+    seed_everything(client_seed(cfg, cid))
+
+
 def _tf_dim(data) -> int:
     tf = getattr(data, "triple_feat", None)
     return tf.shape[1] if tf is not None else 0

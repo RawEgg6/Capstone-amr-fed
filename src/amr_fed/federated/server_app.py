@@ -14,6 +14,7 @@ from flwr.server.strategy import FedAvg
 
 from .task import (
     append_fed_metric, get_weights, init_model_on, load_client_graph, read_run_config,
+    seed_everything,
 )
 
 
@@ -36,6 +37,10 @@ def _weighted_metrics(metrics: list) -> dict:
 
 def server_fn(context: Context):
     cfg = read_run_config()
+    # Seed the server process so the initial parameters are deterministic. Without this,
+    # the server (a separate process from the driver) inits weights with a fresh RNG and
+    # every FedAvg run starts from different weights (see task.seed_everything).
+    seed_everything(int(cfg.get("seed", 42)))
     init_weights = get_weights(init_model_on(load_client_graph(0), cfg))
     strategy = FedAvg(
         fraction_fit=1.0,

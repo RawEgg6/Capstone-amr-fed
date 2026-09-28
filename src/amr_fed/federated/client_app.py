@@ -11,7 +11,7 @@ from flwr.common import Context
 
 from .task import (
     get_weights, init_model_on, load_client_graph, local_eval, local_train,
-    read_run_config, set_weights,
+    read_run_config, seed_client, set_weights,
 )
 
 
@@ -37,6 +37,9 @@ class FlowerClient(NumPyClient):
 def client_fn(context: Context):
     cfg = read_run_config()
     pid = int(context.node_config["partition-id"])
+    # Ray runs each client in its own process with a fresh RNG; seed it deterministically
+    # (parent seed + cid) BEFORE the model is built, so FedAvg is reproducible run-to-run.
+    seed_client(cfg, pid)
     return FlowerClient(load_client_graph(pid), cfg, pid).to_client()
 
 
