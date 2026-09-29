@@ -41,6 +41,11 @@ CLIENTS_DIR = Path(tempfile.gettempdir()) / "amr_fed_clients"
 FED_HISTORY = CLIENTS_DIR / "fed_history.jsonl"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Contract for topology-aware aggregation (Phase 5): the client's fit() metrics carry
+# its fingerprint — a JSON list of floats in topology.FEATURE_NAMES order — under this
+# key. The server strategy reads it back; missing/malformed values mean FedAvg fallback.
+FIT_METRIC_KEY = "topology_fingerprint"
+
 
 # ---- federated metric history (flwr 1.23 run_simulation returns None, so the
 #      strategy appends each round's aggregated macro-F1 here for run.py to read) ----

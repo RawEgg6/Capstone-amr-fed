@@ -11,9 +11,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from amr_fed.topology import (
-    FEATURE_NAMES, TopologyFingerprint, aggregation_weights,
+    DEFAULT_EXCLUDE, FEATURE_NAMES, TopologyFingerprint, aggregation_weights,
     compute_fingerprint, cosine_similarity_matrix, distance_to_centroid,
-    fingerprint_matrix, zscore,
+    fingerprint_matrix, select_features, zscore,
 )
 
 D = len(FEATURE_NAMES)  # 14
@@ -144,6 +144,50 @@ def test_fingerprint_matrix_shape():
     assert m.shape == (3, D)
 
 
+def test_select_features_drops_constant_and_excluded():
+    names = ["a", "resistance_rate", "c", "flat"]
+    f = np.array([[1.0, 0.2, 5.0, 9.0],
+                  [2.0, 0.2, 6.0, 9.0],
+                  [3.0, 0.2, 7.0, 9.0]])
+    kept, kept_names = select_features(f, names)   # named exclude + constant col
+    assert kept.shape == (3, 2)
+    assert kept_names == ["a", "c"]
+    # cv_floor=0 keeps the constant column too (name exclusion still applies)
+    kept0, names0 = select_features(f, names, cv_floor=0.0)
+    assert kept0.shape == (3, 3) and names0 == ["a", "c", "flat"]
+
+
+def test_select_features_cv_floor_drops_near_constant():
+    # col0 varies ~30% relatively (kept); col1 varies 0.1% (dropped as noise)
+    f = np.array([[100.0, 4.000], [110.0, 4.004], [90.0, 3.996]])
+    kept, kept_names = select_features(f, ["big", "tiny"], exclude=())
+    assert kept_names == ["big"]
+    assert kept.shape == (3, 1)
+
+
+def test_select_features_raises_when_nothing_survives():
+    try:
+        select_features(np.ones((3, 2)), ["a", "b"])
+        raise AssertionError("all-constant matrix should raise")
+    except ValueError:
+        pass
+
+
+def test_default_exclude_removes_resistance_rate():
+    assert "resistance_rate" in DEFAULT_EXCLUDE
+    base = compute_fingerprint(_frame()).features
+    m = np.array([base, base * 1.1 + 0.01, base * 0.9 - 0.01])  # 3 distinct hospitals
+    _, kept_names = select_features(m, list(FEATURE_NAMES))
+    assert "resistance_rate" not in kept_names
+    assert "history_prior_rate" in kept_names   # the model-relevant twin stays
+
+
+def test_aggregation_weights_empty_selection_falls_back_uniform():
+    const = [TopologyFingerprint(np.full(D, 2.0)) for _ in range(3)]
+    w = aggregation_weights(const, temperature=0.5)
+    assert np.allclose(w, 1.0 / 3)               # indistinguishable -> FedAvg
+
+
 if __name__ == "__main__":
     test_fingerprint_shape_names_and_dict()
     test_fingerprint_deterministic()
@@ -157,4 +201,9 @@ if __name__ == "__main__":
     test_aggregation_weights_temperature_controls_peakedness()
     test_aggregation_weights_guards()
     test_fingerprint_matrix_shape()
+    test_select_features_drops_constant_and_excluded()
+    test_select_features_cv_floor_drops_near_constant()
+    test_select_features_raises_when_nothing_survives()
+    test_default_exclude_removes_resistance_rate()
+    test_aggregation_weights_empty_selection_falls_back_uniform()
     print("OK: topology unit tests passed.")

@@ -6,12 +6,14 @@ global model on its own held-out test triples.
 """
 from __future__ import annotations
 
+import json
+
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context
 
 from .task import (
-    get_weights, init_model_on, load_client_graph, local_eval, local_train,
-    read_run_config, seed_client, set_weights,
+    FIT_METRIC_KEY, get_weights, init_model_on, load_client_graph, local_eval,
+    local_train, read_run_config, seed_client, set_weights,
 )
 
 
@@ -25,7 +27,14 @@ class FlowerClient(NumPyClient):
     def fit(self, parameters, config):
         set_weights(self.model, parameters)
         local_train(self.model, self.data, self.cfg["local_epochs"])
-        return get_weights(self.model), int(self.data.train_mask.sum()), {}
+        metrics: dict = {}
+        # Phase 5: hand the server our topology fingerprint (driver-computed from our
+        # patient subset and stored in run_config.json). Absent -> the server falls back
+        # to plain FedAvg weights for us.
+        fp = (self.cfg.get("fingerprints") or {}).get(str(self.cid))
+        if fp is not None:
+            metrics[FIT_METRIC_KEY] = json.dumps([float(v) for v in fp])
+        return get_weights(self.model), int(self.data.train_mask.sum()), metrics
 
     def evaluate(self, parameters, config):
         set_weights(self.model, parameters)

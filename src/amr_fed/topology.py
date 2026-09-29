@@ -54,6 +54,12 @@ FEATURE_NAMES: tuple[str, ...] = (
 
 _HISTORY_IDX = FEATURE_NAMES.index("history_prior_rate")
 
+# Features excluded from similarity by default. `resistance_rate` tracks
+# `history_prior_rate` almost 1:1 on real data (the history summary is built from the
+# same labels), so keeping both would double-vote the label signal. The rate stays
+# computed and reported as a covariate — it is only left out of the weighting math.
+DEFAULT_EXCLUDE: tuple[str, ...] = ("resistance_rate",)
+
 
 @dataclass(frozen=True)
 class TopologyFingerprint:
@@ -156,6 +162,45 @@ def fingerprint_matrix(fingerprints: Sequence[TopologyFingerprint]) -> np.ndarra
     return np.vstack([np.asarray(f.features, dtype=np.float64) for f in fingerprints])
 
 
+def select_features(mat: np.ndarray, names: Sequence[str] | None = None, *,
+                    exclude: Sequence[str] = DEFAULT_EXCLUDE,
+                    cv_floor: float = 0.01) -> tuple[np.ndarray, list[str] | None]:
+    """Choose which feature columns participate in similarity.
+
+    Drops (a) columns named in ``exclude`` (default: ``resistance_rate``, which
+    duplicates ``history_prior_rate``), and (b) columns whose coefficient of
+    variation ``std / |mean|`` is below ``cv_floor`` — a near-constant feature cannot
+    discriminate hospitals, and z-scoring would amplify its noise to a full vote
+    (this is exactly what happens to shared-backbone stats like ``log_antibiotics``).
+
+    ``cv_floor=0.0`` keeps everything (up to the name exclusion). Returns the kept
+    matrix and kept names (or ``None`` when no names were given). Raises ValueError
+    if nothing survives — callers fall back to uniform weights.
+    """
+    f = np.asarray(mat, dtype=np.float64)
+    if f.ndim != 2:
+        raise ValueError(f"expected a 2-D matrix, got shape {f.shape}")
+    if names is not None and len(names) != f.shape[1]:
+        raise ValueError(f"{len(names)} names for {f.shape[1]} columns")
+    keep, kept_names = [], []
+    for j in range(f.shape[1]):
+        if names is not None and names[j] in exclude:
+            continue
+        col = f[:, j]
+        std = float(col.std())
+        mean_abs = abs(float(col.mean()))
+        # CV of a constant column is 0 (dropped unless cv_floor == 0); a zero-mean
+        # column with spread has infinite CV (always kept).
+        cv = 0.0 if std == 0.0 else (std / mean_abs if mean_abs != 0.0 else float("inf"))
+        if cv < cv_floor:
+            continue
+        keep.append(j)
+        kept_names.append(names[j] if names is not None else j)
+    if not keep:
+        raise ValueError("select_features: no feature column survived")
+    return f[:, keep], (kept_names if names is not None else None)
+
+
 def zscore(mat: np.ndarray) -> np.ndarray:
     """Column-wise z-score. Zero-variance columns become 0 (never NaN)."""
     f = np.asarray(mat, dtype=np.float64)
@@ -202,22 +247,33 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 
 
 def aggregation_weights(fingerprints, temperature: float = 1.0,
-                        mode: str = "consensus") -> np.ndarray:
+                        mode: str = "consensus",
+                        exclude: Sequence[str] = DEFAULT_EXCLUDE,
+                        cv_floor: float = 0.01) -> np.ndarray:
     """Turn client fingerprints into server aggregation weights (sum to 1).
 
-    Weights are built from standardised distance-to-centroid (see
-    ``distance_to_centroid``): softmax(-dist / T) for ``mode="consensus"``
-    (up-weight typical clients, FedGTA-style) or softmax(+dist / T) for
-    ``mode="distinctiveness"`` (up-weight the odd hospital out, to protect rare
-    regimes — our project's failure mode).
+    Pipeline: drop excluded / near-constant features (see ``select_features``) ->
+    z-score the survivors -> standardised distance to the centroid ->
+    softmax(-dist / T) for ``mode="consensus"`` (up-weight typical clients,
+    FedGTA-style) or softmax(+dist / T) for ``mode="distinctiveness"`` (up-weight
+    the odd hospital out, to protect rare regimes — our project's failure mode).
 
     ``temperature=inf`` returns uniform 1/n — exactly plain FedAvg (sanity anchor).
-    A single fingerprint returns weight 1.
+    A single fingerprint returns weight 1. If feature selection empties the matrix
+    (indistinguishable hospitals), falls back to uniform.
     """
     if mode not in ("consensus", "distinctiveness"):
         raise ValueError(f"mode must be 'consensus' or 'distinctiveness', got {mode!r}")
-    mat = fingerprints.features[None, :] if isinstance(fingerprints, TopologyFingerprint) \
-        else fingerprint_matrix(fingerprints)
+    if isinstance(fingerprints, TopologyFingerprint):
+        mat = fingerprints.features[None, :]
+        names: Sequence[str] | None = list(fingerprints.names)
+    elif isinstance(fingerprints, np.ndarray):
+        mat = np.asarray(fingerprints, dtype=np.float64)
+        names = None
+    else:
+        fps = list(fingerprints)
+        mat = fingerprint_matrix(fps)
+        names = list(fps[0].names)
     n = mat.shape[0]
     if n == 1:
         return np.ones(1, dtype=np.float64)
@@ -225,7 +281,11 @@ def aggregation_weights(fingerprints, temperature: float = 1.0,
         return np.full(n, 1.0 / n, dtype=np.float64)
     if temperature <= 0:
         raise ValueError(f"temperature must be > 0 (or inf), got {temperature}")
-    dist = distance_to_centroid(mat)
+    try:
+        kept, _ = select_features(mat, names, exclude=exclude, cv_floor=cv_floor)
+    except ValueError:
+        return np.full(n, 1.0 / n, dtype=np.float64)   # indistinguishable hospitals
+    dist = distance_to_centroid(kept)
     logits = -dist / temperature if mode == "consensus" else dist / temperature
     return _softmax(logits)
 

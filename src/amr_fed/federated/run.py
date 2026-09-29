@@ -122,7 +122,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                local_epochs: int = 6, local_only_epochs: int | None = None,
                seed: int = config.SEED, patient_history: bool = True, df=None,
                partition_fn=None, label: str | None = None, compute_pooled: bool = True,
-               hidden: int = 128):
+               hidden: int = 128, strategy: str = "fedavg",
+               topo_temperature: float = 1.0, topo_mode: str = "distinctiveness"):
     """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
     Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
     dispatched by keyword match on its signature (see partition._call_partition): n_clients
@@ -130,7 +131,13 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     contiguous 0..k-1 ids and n_clients is derived from the split, so specimen (3-4
     hospitals) works without extra args.
     local_only_epochs defaults to rounds*local_epochs (matched budget: local-only trains
-    the same total epochs as FedAvg's per-round local epochs x rounds)."""
+    the same total epochs as FedAvg's per-round local epochs x rounds).
+    strategy="fedavg" (default) runs plain FedAvg; strategy="topology" swaps the server
+    aggregation for fingerprint-similarity mixing (Phase 5: TopologyAwareStrategy with
+    topo_temperature / topo_mode). Everything else — graphs, budgets, seeds, evaluation —
+    is identical, so the comparison is exactly apples-to-apples."""
+    if strategy not in ("fedavg", "topology"):
+        raise ValueError(f"strategy must be 'fedavg' or 'topology', got {strategy!r}")
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
     from flwr.simulation import run_simulation
 
@@ -144,6 +151,22 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     n_clients = int(assign.max()) + 1
     tag = label or f"alpha={alpha}"
     cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden, seed=seed)
+    cfg["strategy"] = strategy
+    if strategy == "topology":
+        # Phase 5: compute each hospital's fingerprint driver-side (the driver has the
+        # frame + assignment; clients only see their saved graph) and hand it to the
+        # clients via run_config.json. Clients forward it in fit() metrics; the server
+        # strategy mixes by similarity. See federated/strategy.py for the contract.
+        from ..topology import compute_fingerprint
+        cfg["topo_temperature"] = float(topo_temperature)
+        cfg["topo_mode"] = topo_mode
+        fps = {}
+        for c in range(n_clients):
+            sub = df[df[PK].map(assign) == c]
+            fps[str(c)] = compute_fingerprint(sub).tolist()
+        cfg["fingerprints"] = fps
+        print(f"{tag} | strategy=topology (mode={topo_mode}, T={topo_temperature}) | "
+              f"fingerprints computed for {n_clients} hospitals")
     write_run_config(cfg)
     sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")
@@ -187,7 +210,10 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     fed_aucs = [fed_pc_auc.get(str(c)) for c in range(n_clients)]
 
     pooled_str = f"{pl_avg:.4f}" + ("" if pl_worst is None else f" (worst {pl_worst})")
-    print(f"\n=== Phase 3 comparison ({tag}) ===  [macro-F1 | AUROC]")
+    strat_str = ("topology-aware "
+                 f"(mode={topo_mode}, T={topo_temperature})" if strategy == "topology"
+                 else "FedAvg")
+    print(f"\n=== Phase 3 comparison ({tag}) [{strat_str}] ===  [macro-F1 | AUROC]")
     print(f"  pooled (centralized, same protocol): {pooled_str} | AUROC {pl_auc:.4f}")
     print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final} | AUROC {fed_auc_best}")
     print(f"  local-only (alone, weighted)   : {lo_avg:.4f} | AUROC {lo_auc:.4f}")
@@ -207,7 +233,10 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     if worst_fed is not None:
         print(f"  worst-hospital: local {worst_local:.4f} -> FedAvg {worst_fed:.4f} "
               f"({worst_fed - worst_local:+.4f})")
-    return {"alpha": alpha, "pooled": pl_avg, "pooled_worst": pl_worst,
+    return {"alpha": alpha, "strategy": strategy,
+             "topo_temperature": float(topo_temperature) if strategy == "topology" else None,
+             "topo_mode": topo_mode if strategy == "topology" else None,
+             "pooled": pl_avg, "pooled_worst": pl_worst,
             "pooled_per_client": pl_f1s, "fedavg_best": fed_best,
             "fedavg_final": fed_final, "local_only": lo_avg,
             "local_only_per_client": lo_f1s, "fedavg_per_client": fed_f1s,
@@ -222,7 +251,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   local_epochs: int = 6, seeds=(42, 43, 44), patient_history: bool = True,
                   df=None, partition_fn=None, label: str | None = None,
                   compute_pooled: bool = True, local_only_epochs: int | None = None,
-                  hidden: int = 128):
+                  hidden: int = 128, strategy: str = "fedavg",
+                  topo_temperature: float = 1.0, topo_mode: str = "distinctiveness"):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
     pass label_dirichlet / specimen_baseline for the non-IID settings).
@@ -231,7 +261,9 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     own hospital count. topology_split needs n_clients a multiple of 4, so pass e.g.
     n_clients=4 or 8. Loads the cohort ONCE and reuses it.
     local_only_epochs is passed straight through to run_fedavg (None = matched budget
-    rounds*local_epochs); hidden is the per-client hidden width in _run_config."""
+    rounds*local_epochs); hidden is the per-client hidden width in _run_config.
+    strategy="topology" (+ topo_temperature / topo_mode) swaps the server aggregation
+    for fingerprint-similarity mixing (Phase 5); everything else stays identical."""
     df = load_cohort_frame() if df is None else df
     tag = label or f"alpha={alpha}"
     runs = []
@@ -242,7 +274,9 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                patient_history=patient_history, df=df,
                                partition_fn=partition_fn, label=label,
                                compute_pooled=compute_pooled,
-                               local_only_epochs=local_only_epochs, hidden=hidden))
+                               local_only_epochs=local_only_epochs, hidden=hidden,
+                               strategy=strategy, topo_temperature=topo_temperature,
+                               topo_mode=topo_mode))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN

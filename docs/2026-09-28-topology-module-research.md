@@ -187,6 +187,37 @@ first, mean second.
 
 ---
 
+## 8. v0.5 wiring — from fingerprint to aggregation (implemented)
+
+How the v0 math reaches a live Flower run (driver computes, client forwards, server mixes):
+
+1. **Driver** (`run_fedavg(..., strategy="topology")`): after partitioning, computes one
+   `compute_fingerprint(sub)` per hospital from the frame + assignment and stores
+   `{cid: [...]}` in `run_config.json` alongside `strategy`, `topo_temperature`,
+   `topo_mode`. (The client only sees its saved graph — no timestamps/names — so the
+   driver, which has the frame, does the computing. Identical data either way.)
+2. **Client** (`client_app.fit`): reads its own vector and packs
+   `metrics["topology_fingerprint"] = json.dumps([...])`. Absent vector → the server
+   falls back for that client.
+3. **Server** (`server_app` + fresh `federated/strategy.py`): `TopologyAwareStrategy`
+   subclasses `FedAvg`, overrides only `aggregate_fit` — decode payloads, build
+   `TopologyFingerprint`s, `aggregation_weights(...)`, weighted-average the parameters.
+   Missing/malformed payloads → size-proportional (FedAvg) fallback with a warning.
+   Everything else (sampling, evaluation, initial weights, seeds) is inherited
+   unchanged, so the comparison is apples-to-apples. Default strategy stays FedAvg.
+
+Fingerprint hygiene (v0.1, in `topology.select_features`, on by default): drop the
+`resistance_rate` column (it duplicates `history_prior_rate` ~1:1) and any column whose
+coefficient of variation is below 0.01 (near-constant backbone stats whose noise
+z-scoring would amplify to full votes). If nothing survives, weights fall back to
+uniform. `temperature=inf` always reproduces FedAvg exactly.
+
+Evaluation driver: `notebooks/07_topology_comparison.ipynb` runs organism-community +
+specimen × {FedAvg, topology} at matched protocols, 3 seeds, and prints the Path-B
+verdict (topology-aware beats FedAvg-best by ≥ 0.005 on worst-hospital or mean).
+
+---
+
 ## Appendix — plain-word glossary
 
 - **Fingerprint** — a small numeric summary of one hospital's graph/data; the only thing shared with the server.

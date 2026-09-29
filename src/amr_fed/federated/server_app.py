@@ -12,6 +12,7 @@ from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
 
+from .strategy import TopologyAwareStrategy
 from .task import (
     append_fed_metric, get_weights, init_model_on, load_client_graph, read_run_config,
     seed_everything,
@@ -42,13 +43,24 @@ def server_fn(context: Context):
     # every FedAvg run starts from different weights (see task.seed_everything).
     seed_everything(int(cfg.get("seed", 42)))
     init_weights = get_weights(init_model_on(load_client_graph(0), cfg))
-    strategy = FedAvg(
+    common = dict(
         fraction_fit=1.0,
         fraction_evaluate=1.0,
         min_available_clients=cfg["n_clients"],
         initial_parameters=ndarrays_to_parameters(init_weights),
         evaluate_metrics_aggregation_fn=_weighted_metrics,
     )
+    # Phase 5: "topology" swaps plain FedAvg for fingerprint-similarity mixing.
+    # Everything else (sampling, evaluation, initial weights) is identical, so the
+    # comparison is exactly apples-to-apples. Default stays plain FedAvg.
+    if cfg.get("strategy", "fedavg") == "topology":
+        strategy = TopologyAwareStrategy(
+            temperature=float(cfg.get("topo_temperature", 1.0)),
+            mode=cfg.get("topo_mode", "distinctiveness"),
+            **common,
+        )
+    else:
+        strategy = FedAvg(**common)
     return ServerAppComponents(strategy=strategy, config=ServerConfig(num_rounds=cfg["rounds"]))
 
 
