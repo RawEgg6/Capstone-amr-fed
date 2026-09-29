@@ -98,7 +98,14 @@ def build_and_save_clients(df, assignment, n_clients: int, seed: int = config.SE
     sizes = []
     for c in range(n_clients):
         sub = df[df[PK].map(assignment) == c]
-        data = _pad_canonical_edges(to_hetero_data(build_arrays(sub, seed=seed)))
+        arrays = build_arrays(sub, seed=seed)
+        data = _pad_canonical_edges(to_hetero_data(arrays))
+        # Attach organism/antibiotic name arrays so clients can build
+        # topology profiles keyed by name (not local integer indices).
+        data.node_names = {
+            "organism": arrays["node_names"]["organism"],    # np.ndarray of str
+            "antibiotic": arrays["node_names"]["antibiotic"],
+        }
         save_client_graph(c, data)
         sizes.append(int(data["patient"].num_nodes))
     return sizes

@@ -1,12 +1,18 @@
-"""Phase 3 driver: local-only baseline + Flower FedAvg, compared to pooled (Phase 1).
+"""Phase 3 driver: local-only baseline + Flower FL, compared to pooled (Phase 1).
 
 The three numbers this produces, at a given alpha:
   pooled      -- Phase-1 model on all data (the "everyone shares data" ceiling)
   local-only  -- each hospital trains alone (weighted-avg macro-F1)
   FedAvg      -- hospitals train locally, server averages weights each round
+  TKPA-FL     -- topology-aware personalised aggregation (strategy="topology")
 
-FedAvg's per-round local epochs x rounds is set equal to local-only's epoch budget
-so the comparison is fair. Run on Colab (needs torch + flwr[simulation]).
+FedAvg/TKPA-FL per-round local epochs x rounds is equal to local-only's epoch
+budget so the comparison is fair. Run on Colab (needs torch + flwr[simulation]).
+
+Usage:
+    from amr_fed.federated.run import run_fedavg
+    run_fedavg(alpha=0.5)                         # FedAvg (default)
+    run_fedavg(alpha=0.5, strategy="topology")    # TKPA-FL
 """
 from __future__ import annotations
 
@@ -46,9 +52,20 @@ def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
 
 def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                local_epochs: int = 6, local_only_epochs: int = 60,
-               seed: int = config.SEED, df=None):
+               seed: int = config.SEED, df=None,
+               strategy: str = "fedavg"):
+    """Run one FL experiment.
+
+    Parameters
+    ----------
+    strategy : ``"fedavg"`` (default, unchanged baseline) or ``"topology"``
+               (TKPA-FL topology-aware personalised aggregation).
+    """
     import torch
     from flwr.simulation import run_simulation
+
+    if strategy not in ("fedavg", "topology"):
+        raise ValueError(f"strategy must be 'fedavg' or 'topology', got {strategy!r}")
 
     torch.manual_seed(seed)
     df = load_cohort_frame() if df is None else df
@@ -56,45 +73,54 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     cfg = _run_config(n_clients, rounds, local_epochs)
     write_run_config(cfg)
     sizes = build_and_save_clients(df, assign, n_clients, seed=seed)
-    print(f"alpha={alpha} | {n_clients} hospitals | patients each: {sizes}")
+    print(f"alpha={alpha} | {n_clients} hospitals | patients each: {sizes} | strategy={strategy}")
 
     lo_f1s, lo_avg = run_local_only(n_clients, cfg, epochs=local_only_epochs)
     print(f"LOCAL-ONLY per-hospital macro-F1: {lo_f1s} | weighted avg = {lo_avg:.4f}")
 
+    # Select Flower server app
+    srv_app = server_app.topology_app if strategy == "topology" else server_app.app
+    strategy_label = "TKPA-FL" if strategy == "topology" else "FedAvg"
+
     ngpu = (0.9 / n_clients) if DEVICE == "cuda" else 0.0
     reset_fed_history()
-    run_simulation(  # returns None in flwr 1.23; the strategy logs per-round F1 to disk
-        server_app=server_app.app,
+    run_simulation(
+        server_app=srv_app,
         client_app=client_app.app,
         num_supernodes=n_clients,
         backend_config={"client_resources": {"num_cpus": 1, "num_gpus": ngpu}},
     )
     fed = read_fed_history()
-    print("FEDAVG macro-F1 by round:", [round(v, 4) for v in fed])
-    fed_best = round(max(fed), 4) if fed else None      # best round (FedAvg drifts on non-IID)
+    print(f"{strategy_label} macro-F1 by round:", [round(v, 4) for v in fed])
+    fed_best = round(max(fed), 4) if fed else None
     fed_final = round(fed[-1], 4) if fed else None
 
-    print(f"\n=== Phase 3 comparison (alpha={alpha}) ===")
-    print(f"  pooled (Phase 1, all data)     : {POOLED_REFERENCE}")
-    print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final}")
-    print(f"  local-only (alone, weighted)   : {lo_avg:.4f}")
+    print(f"\n=== Phase 3 comparison (alpha={alpha}, strategy={strategy}) ===")
+    print(f"  pooled (Phase 1, all data)        : {POOLED_REFERENCE}")
+    print(f"  {strategy_label}  best-round / final : {fed_best} / {fed_final}")
+    print(f"  local-only (alone, weighted)      : {lo_avg:.4f}")
     if fed_best is not None:
-        print(f"  => FedAvg (best) {'BEATS' if fed_best > lo_avg else 'does NOT beat'} local-only")
-    return {"alpha": alpha, "pooled": POOLED_REFERENCE, "fedavg_best": fed_best,
-            "fedavg_final": fed_final, "local_only": lo_avg,
+        print(f"  => {strategy_label} (best) {'BEATS' if fed_best > lo_avg else 'does NOT beat'} local-only")
+    return {"alpha": alpha, "pooled": POOLED_REFERENCE, "strategy": strategy,
+            "fedavg_best": fed_best, "fedavg_final": fed_final, "local_only": lo_avg,
             "local_only_per_client": lo_f1s, "sizes": sizes, "fed_by_round": fed}
 
 
 def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
-                  local_epochs: int = 6, seeds=(42, 43, 44), df=None):
-    """Run FedAvg at one alpha over several seeds; report mean +/- std to denoise
-    the partition + training randomness. Loads the cohort ONCE and reuses it."""
+                  local_epochs: int = 6, seeds=(42, 43, 44), df=None,
+                  strategy: str = "fedavg"):
+    """Run FL at one alpha over several seeds; report mean +/- std.
+
+    strategy : ``"fedavg"`` (default) or ``"topology"`` (TKPA-FL).
+    Loads the cohort ONCE and reuses it across seeds.
+    """
     df = load_cohort_frame() if df is None else df
     runs = []
     for s in seeds:
-        print(f"\n########## alpha={alpha}  seed={s} ##########")
+        print(f"\n########## alpha={alpha}  seed={s}  strategy={strategy} ##########")
         runs.append(run_fedavg(alpha=alpha, n_clients=n_clients, rounds=rounds,
-                               local_epochs=local_epochs, seed=s, df=df))
+                               local_epochs=local_epochs, seed=s, df=df,
+                               strategy=strategy))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None]
