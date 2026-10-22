@@ -302,6 +302,87 @@ def label_dirichlet(df: pd.DataFrame, n_clients: int = 5, beta: float = 0.5,
     return assignment
 
 
+def _patient_shared_rate(df: pd.DataFrame, min_pair_patients: int = 25) -> pd.Series:
+    """Per-patient mean label over tests on SHARED (organism, antibiotic) pairs.
+
+    A pair is shared when >= min_pair_patients distinct patients were tested on it —
+    those are the pairs every hospital will hold, so inter-hospital disagreement on
+    them is what makes averaging conflict (patients without any shared-pair test fall
+    back to their overall resistance rate; if no pair qualifies at all, fall back to
+    overall rates with a warning). Returns Series index=patient -> rate."""
+    d = df[[PK, ORG, ABX, LABEL]]
+    overall = d.groupby(PK)[LABEL].mean()
+    pair_pat = d.groupby([ORG, ABX])[PK].nunique()
+    shared = pair_pat[pair_pat >= min_pair_patients]
+    if len(shared) == 0:
+        warnings.warn(f"no (organism, antibiotic) pair tested in >= {min_pair_patients} "
+                      "patients — falling back to overall per-patient resistance rate",
+                      stacklevel=2)
+        return overall
+    mask = pd.MultiIndex.from_frame(d[[ORG, ABX]]).isin(shared.index)
+    shared_rate = d.loc[mask].groupby(PK)[LABEL].mean()
+    return shared_rate.reindex(overall.index).fillna(overall)
+
+
+def antibiogram_conflict(df: pd.DataFrame, n_clients: int = 5, shares=None,
+                         seed: int = config.SEED,
+                         min_pair_patients: int = 25) -> pd.Series:
+    """Concept-shift split: hospitals disagree about the SAME bug-drug pairs.
+
+    Rank patients by their resistance rate on *shared* pairs (pairs every hospital
+    holds) and cut contiguous blocks with per-hospital `shares`, so the local
+    antibiograms for identical (organism, antibiotic) pairs diverge maximally across
+    hospitals — hospital 0 = most susceptible on shared pairs, hospital k-1 = most
+    resistant. This is the condition the FL literature says breaks plain averaging
+    (concept shift in p(y|x), not just marginal label mix): each local model is
+    self-consistent, but their learned functions conflict, and the size-weighted FedAvg
+    compromise follows the big hospital (mixed label x quantity skew; cf. IJCAI-24
+    FNR-FL). Clinically: inter-hospital antibiogram variation — why local empirical
+    guidelines exist.
+
+    Differences from `label_dirichlet` (its dead end): (1) scoring is conditioned on
+    SHARED pairs, so divergence is guaranteed on the exact pairs all hospitals hold,
+    not just overall class mix; (2) blocks are contiguous rank-extremes, not Dirichlet
+    draws; (3) `shares` are explicit and floored at 3% — no degenerate 1-patient
+    hospitals. Default shares put the big majority at the susceptible end and taper to
+    a small, strongly resistant minority (the hospital FedAvg's size weights drown and
+    a topology-aware aggregator should rescue).
+
+    `seed` unused (deterministic); kept for the uniform partition_fn(df, seed)
+    signature. Returns Series index=patient -> client id (0..n_clients-1)."""
+    if n_clients < 1:
+        raise ValueError(f"n_clients must be >= 1, got {n_clients}")
+    if shares is None:  # decreasing: big susceptible-leaning majority -> small resistant tail
+        raw = 0.55 ** np.arange(n_clients)
+        shares = raw / raw.sum()
+    shares = np.asarray(shares, dtype=float)
+    if shares.size != n_clients:
+        raise ValueError(f"shares has {shares.size} entries but n_clients={n_clients}")
+    if (shares <= 0).any():
+        raise ValueError(f"shares must be strictly positive, got {shares}")
+    shares = np.maximum(shares, 0.03)   # size guard: no hospital below ~3% of patients
+    shares = shares / shares.sum()
+
+    score = _patient_shared_rate(df, min_pair_patients)
+    if len(score) < n_clients:
+        raise ValueError(f"n_clients={n_clients} exceeds #patients {len(score)}")
+    # rank by shared-pair rate; tiebreak on overall rate then patient id (deterministic
+    # regardless of df row order, and keeps single-patient evidence levels apart)
+    keys = pd.DataFrame({"s": score.to_numpy(),
+                         "t": df.groupby(PK)[LABEL].mean().reindex(score.index).to_numpy(),
+                         "pk": score.index.to_numpy()})
+    order = keys.sort_values(["s", "t", "pk"], kind="mergesort")["pk"].to_numpy()
+
+    counts = _apportion(len(order), shares)
+    assignment = pd.Series(-1, index=score.index, dtype="int64")
+    start = 0
+    for c, k in enumerate(counts):
+        assignment.loc[order[start:start + k]] = c
+        start += k
+    assert (assignment >= 0).all(), "some patient was left unassigned"
+    return assignment
+
+
 def _greedy_pack(counts: pd.Series, n_bins: int) -> dict:
     """Pack items into n_bins bins, smallest-load-first (largest items first).
 
@@ -504,6 +585,19 @@ def _self_check() -> None:
     print("\n=== label-Dirichlet split (resistant-rate skew, 5 hospitals) ===")
     g, niid_lab = partition_summary(df, label_dirichlet(df, n_clients=5, beta=0.5))
     print(g.to_string()); print("non-IID(wstd):", round(niid_lab, 4))
+
+    print("\n=== antibiogram-conflict split (shared-pair rate skew + size imbalance) ===")
+    ab = antibiogram_conflict(df, n_clients=5)
+    assert ab.index.is_unique and len(ab) == n_pat, "antibiogram_conflict: 1:1 patient assignment"
+    d_ab = df[[PK, LABEL]].copy()
+    d_ab["client"] = d_ab[PK].map(ab)
+    d_ab["score"] = d_ab[PK].map(_patient_shared_rate(df))
+    g_ab = d_ab.groupby("client").agg(n_patients=(PK, "nunique"), n_tests=(LABEL, "size"),
+                                      resist_rate=(LABEL, "mean"), mean_score=("score", "mean"))
+    print(g_ab.round(4).to_string())
+    rr_ab = g_ab["resist_rate"]
+    print(f"  resistance-rate spread: {rr_ab.max() - rr_ab.min():.4f} (the conflict dial)")
+    _assert_separated(g_ab, "antibiogram_conflict", monotone=True)
 
     print("\n=== specimen natural split ===")
     g, niid_spec = partition_summary(df, specimen_baseline(df))

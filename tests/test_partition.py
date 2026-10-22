@@ -1,5 +1,6 @@
 """Offline unit tests for partition.py pure logic. Run: python tests/test_partition.py"""
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -401,6 +402,109 @@ def test_call_partition_partial_purity():
     assert a.equals(direct)                                 # purity=0.3 survives the partial
 
 
+from amr_fed.partition import antibiogram_conflict, _patient_shared_rate
+
+
+def _antibiogram_frame():
+    """8 patients sharing ONE bug-drug pair, split 4 S / 4 R on it; each patient also
+    gets a unique junk test with the OPPOSITE label, so every patient's OVERALL rate is
+    0.5 — only the shared-pair signal can separate them."""
+    rows = []
+    for i in range(8):
+        lab = 1 if i >= 4 else 0
+        rows.append((f"p{i}", "oS", "aS", lab))             # shared pair outcome
+        rows.append((f"p{i}", f"oU{i}", f"aU{i}", 1 - lab))  # unique junk, scrambles overall
+    return pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+
+
+def test_patient_shared_rate_ignores_unshared_pairs():
+    df = _antibiogram_frame()
+    score = _patient_shared_rate(df, min_pair_patients=4)   # only (oS, aS) qualifies
+    assert score.index.is_unique and not score.isna().any()
+    assert (score.loc[["p0", "p1", "p2", "p3"]] == 0).all()  # S on the shared pair
+    assert (score.loc[["p4", "p5", "p6", "p7"]] == 1).all()  # R on the shared pair
+    overall = df.groupby(PK)["label"].mean()
+    assert np.isclose(overall, 0.5).all()                    # overall signal is neutral
+
+
+def test_antibiogram_conflict_separates_on_shared_signal():
+    df = _antibiogram_frame()
+    a = antibiogram_conflict(df, n_clients=2, shares=(0.5, 0.5), min_pair_patients=4)
+    assert a.index.is_unique and len(a) == 8                 # 1:1, no leakage
+    assert set(a.unique()) == {0, 1}
+    # hospital 0 = most susceptible on shared pairs, hospital 1 = most resistant —
+    # separation comes from the shared pair, since overall rates are all 0.5
+    assert set(a.index[a == 0]) == {"p0", "p1", "p2", "p3"}
+    assert set(a.index[a == 1]) == {"p4", "p5", "p6", "p7"}
+    assert antibiogram_conflict(df, n_clients=2, shares=(0.5, 0.5),
+                                min_pair_patients=4).equals(a)   # deterministic
+
+
+def test_antibiogram_conflict_size_imbalance_monotone():
+    # 20 patients, each with 4 tests on shared pairs, resistant count = i % 5
+    # -> scores cycle through {0, .25, .5, .75, 1}; default shares taper majority -> tail
+    rows = []
+    for i in range(20):
+        for k in range(4):
+            rows.append((f"p{i}", "oS", f"a{k}", 1 if k < (i % 5) else 0))
+    df = pd.DataFrame(rows, columns=[PK, ORG, ABX, "label"])
+    a = antibiogram_conflict(df, n_clients=5, min_pair_patients=4)
+    assert a.index.is_unique and len(a) == 20
+    assert set(a.unique()) == {0, 1, 2, 3, 4}
+    # imbalanced on purpose: 9 / 5 / 3 / 2 / 1 patients (default geometric shares)
+    assert list(a.value_counts().sort_index()) == [9, 5, 3, 2, 1]
+    # mean shared-pair score non-decreasing across hospitals (contiguous rank blocks)
+    d = df[[PK, "label"]].copy()
+    d["client"] = d[PK].map(a)
+    d["score"] = d[PK].map(_patient_shared_rate(df, min_pair_patients=4))
+    mean_score = d.groupby("client")["score"].mean()
+    assert mean_score.is_monotonic_increasing
+    assert mean_score.iloc[-1] - mean_score.iloc[0] > 1e-3    # real separation
+
+
+def test_antibiogram_conflict_size_floor_no_degenerate_clients():
+    # explicit shares ask for 0.1% hospitals; the 3% floor must keep them alive
+    # (the degenerate 1-patient client is what broke label_dirichlet at beta=0.1)
+    df = pd.DataFrame({PK: [f"p{i}" for i in range(1000)],
+                       ORG: [f"o{i}" for i in range(1000)],
+                       ABX: ["a0"] * 1000,
+                       "label": [i % 2 for i in range(1000)]})
+    a = antibiogram_conflict(df, n_clients=4,
+                             shares=(0.997, 0.001, 0.001, 0.001), min_pair_patients=1)
+    assert a.index.is_unique and len(a) == 1000
+    assert min(a.value_counts()) >= 10                        # floored away from ~1 patient
+
+
+def test_antibiogram_conflict_fallback_without_shared_pairs():
+    df = _antibiogram_frame()
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        a = antibiogram_conflict(df, n_clients=2, min_pair_patients=9)  # max support is 8
+    assert any("falling back" in str(x.message) for x in w)    # warned, not crashed
+    assert a.index.is_unique and len(a) == 8 and set(a.unique()) <= {0, 1}
+
+
+def test_antibiogram_conflict_guards():
+    df = _antibiogram_frame()
+    for bad in (dict(n_clients=0), dict(n_clients=9),
+                dict(n_clients=2, shares=(0.5, 0.3, 0.2)),
+                dict(n_clients=2, shares=(1.0, 0.0))):
+        try:
+            antibiogram_conflict(df, min_pair_patients=4, **bad)
+            raise AssertionError(f"{bad} should have raised")
+        except ValueError:
+            pass
+
+
+def test_call_partition_antibiogram_dispatch():
+    df = _antibiogram_frame()
+    with warnings.catch_warnings():                    # tiny frame: no pair >= 25 patients
+        warnings.simplefilter("ignore")
+        a = _call_partition(antibiogram_conflict, df, n_clients=2, seed=42)
+        direct = antibiogram_conflict(df, n_clients=2, seed=42)
+    assert a.equals(direct)                                   # n_clients/seed injected by name
+
+
 if __name__ == "__main__":
     test_assign_home_ward_priority()
     test_apportion_sums_to_n()
@@ -427,4 +531,11 @@ if __name__ == "__main__":
     test_call_partition_legacy_lambda()
     test_call_partition_one_arg()
     test_call_partition_partial_purity()
+    test_patient_shared_rate_ignores_unshared_pairs()
+    test_antibiogram_conflict_separates_on_shared_signal()
+    test_antibiogram_conflict_size_imbalance_monotone()
+    test_antibiogram_conflict_size_floor_no_degenerate_clients()
+    test_antibiogram_conflict_fallback_without_shared_pairs()
+    test_antibiogram_conflict_guards()
+    test_call_partition_antibiogram_dispatch()
     print("OK: partition unit tests passed.")
