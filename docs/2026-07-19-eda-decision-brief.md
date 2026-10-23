@@ -123,7 +123,7 @@ Think of the graph as a map: **nodes** = places many patients pass through; **fe
 ## Still open / next steps
 
 1. Team confirms Decisions A–F (especially **C**, the split).
-2. Encode choices into `config.py` / `CLAUDE.md`.
+2. Encode choices into `config.py` / `AGENTS.md`.
 3. Two build-time checks: patient→one-hospital assignment (Dirichlet, no leakage); labs/vitals imputation.
 4. Write `data_loader.py` → `graph_build.py` (core 3 edges first).
 5. Get one hospital to a strong macro-F1 **before** going federated.

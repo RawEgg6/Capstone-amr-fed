@@ -91,7 +91,7 @@ def load_cohort_frame(ward: str | None = None, sample_n: int | None = None) -> p
 
 
 def _self_check() -> None:
-    """Real-data sanity check (see docs/2026-07-19-next-steps.md, task 1)."""
+    """Real-data sanity check (see docs/2026-07-19-eda-decision-brief.md, decision A)."""
     df = load_cohort_frame()
     n, n_org, n_abx = len(df), df[ORG].nunique(), df[ABX].nunique()
     n_null = int((df[ORG].astype(str).str.lower() == "null").sum())

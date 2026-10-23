@@ -49,7 +49,7 @@ src/amr_fed/   core modules (config.py has all locked decisions)
 notebooks/     00_setup_check.ipynb, then EDA + experiments
 data/raw/      local fallback for ARMD CSVs (gitignored)
 tests/
-CLAUDE.md      project context for Claude Code
+AGENTS.md      primary entry point for AI agents (Claude Code reads this via CLAUDE.md)
 ```
 
-See `CLAUDE.md` for the locked schema and the phase plan.
+See `AGENTS.md` for the locked schema and the phase plan.

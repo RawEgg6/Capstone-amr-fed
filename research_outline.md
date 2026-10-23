@@ -206,7 +206,7 @@ ARMD CSVs (Drive, never committed)
 |---|---|---|
 | Local 0.663 → 0.71/0.84; 48-model search | `docs/2026-08-05-phase1-results.md`, nb 03 | logged |
 | FedAvg α-sweep 9/9; specimen/organism wins; label-dir dead end | `docs/2026-08-06-federation-results.md`, `res.txt` | logged |
-| Hard splits + gate FAIL + Louvain smoking gun | `docs/2026-08-09-headroom-calibration.md`, `docs/2026-08-11-splits-and-results.md` | logged |
+| Hard splits + gate FAIL + Louvain smoking gun | `docs/2026-08-11-splits-and-results.md` (§3 results + §7 design/gate, merged 2026-10-23 from the deleted 2026-08-09 calibration/design docs) | logged |
 | Real-data fingerprints + similarity matrices + weights | notebook-06 JSON (Drive `amr_topology_fingerprints.json`; pasted in chat) | logged |
 | Topology vs FedAvg, both PASS + per-seed breakdown | notebook-07 JSON (Drive `amr_topology_comparison.json`; pasted in chat) | logged |
 | Determinism (~1e-4 across arms) | notebook-07 pooled/local columns | logged |

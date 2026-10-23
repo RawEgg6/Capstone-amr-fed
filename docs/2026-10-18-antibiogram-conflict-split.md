@@ -182,6 +182,70 @@ guarded, shared-pair-conditioned* form of label conflict, which prior literature
 (FNR-FL) says behaves differently from either lever alone. All runs — pass or fail —
 get recorded in this doc's results section.
 
-## 8. Results (filled in after the run)
+## 8. Results (filled in 2026-10-23)
 
-*(pending — Colab run not yet performed as of 2026-10-18)*
+**Run:** notebook 08, seeds 42–46 (5), v2 protocol, `antibiogram_conflict(n_clients=5)`.
+Saved: `/content/drive/MyDrive/amr_antibiogram_verdict.json`.
+
+### Raw numbers (mean ± std over 5 seeds)
+
+| Arm | Best-round F1 | Worst-hosp F1 | Final-round F1 |
+|---|---|---|---|
+| Local-only | — | 0.6030 ± 0.0148 | — |
+| FedAvg | 0.6704 ± 0.0035 | 0.6306 ± 0.0064 | 0.6634 ± 0.0152 |
+| Topology-aware | 0.6707 ± 0.0053 | 0.6267 ± 0.0088 | 0.6523 ± 0.0254 |
+
+Tail hospital (resistant-heavy block, highest client id) F1 by seed:
+
+| Seed | FedAvg | Topo |
+|---|---|---|
+| 42 | 0.7539 | 0.7531 |
+| 43 | 0.7175 | 0.7289 |
+| 44 | 0.7387 | 0.7452 |
+| 45 | 0.7540 | 0.7687 |
+| 46 | 0.7454 | 0.7361 |
+| **Mean** | **0.7419** | **0.7464** |
+
+Local-only tail mean: 0.7527.
+
+### Verdict against pre-registered criteria
+
+| Criterion | Result | Value |
+|---|---|---|
+| **C1** — FedAvg hurts minority (`worst_fed ≤ local_worst − 0.01`) | **FAIL** | worst_fed 0.6306, local_worst 0.603; gap = +0.028 (FedAvg *helps* the minority) |
+| **C2** — Path-B gate (`Δworst ≥ 0.005` or `Δmean ≥ 0.005`) | **FAIL** | Δmean = +0.0003, Δworst = −0.0039 (noise-level, topo slightly *worse* on worst) |
+| **C3** — topo raises the tail (tail_topo > tail_fedavg) | **PASS** | 0.7464 vs 0.7419 (+0.0045; within noise, n=5) |
+
+### Interpretation (honest, per falsification rules)
+
+**C1 failed → the condition was not reproduced.** The antibiogram-conflict split did not
+create a FedAvg failure mode: the worst hospital's macro-F1 *improved* from 0.603 (local-only)
+to 0.631 (FedAvg), a +0.028 gain. Size-weighted averaging appears to *transfer* useful signal
+from the large susceptible-majority hospitals to the resistant-minority tail, rather than
+dominating it out.
+
+Possible reasons the condition did not reproduce:
+1. The ARMD feature set (resistance ratios, history, demographics) gives each hospital a
+   self-consistent representation; the globally shared feature structure may swamp any
+   label-level antibiogram conflict in the weight signal.
+2. With only 5 clients and 8 rounds the averaging is coarse; more granular concept shift
+   may require more clients or more heterogeneous feature sets.
+3. The predicted "small resistant tail is dominated" mechanism relies on the tail's gradient
+   pointing away from the majority's. In a GNN trained on triples, the minority tail's
+   *graph structure* (not just label rates) may prevent direct gradient collision.
+
+**C2 failed** as a consequence — because C1 failed, there is no problem for topology-aware
+aggregation to fix. The Δ values (mean +0.0003, worst −0.0039) are noise-level at n=5.
+
+**C3 passed marginally** (topo tail mean 0.7464 vs FedAvg 0.7419, +0.0045). The direction
+is consistent across 3 of 5 seeds but the effect is below noise (std across seeds ~0.02).
+This is not a strong result; it replicates the Phase-5 pattern of a small positive Δ on
+the tail hospital.
+
+**What this means for the paper:** Experiment #1 is an honest null on the target failure
+condition. Report as a negative result: the antibiogram-conflict mechanism does not reproduce
+in ARMD at this scale. The Phase-5 positive result (organism-community / specimen splits)
+stands on its own evidence. Do not merge or re-frame these findings.
+
+Do not re-tune the split or protocol to force C1 PASS — any iteration must be appended
+below this section with date, rationale, and both runs reported side-by-side.
