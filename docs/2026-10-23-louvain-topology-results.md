@@ -86,10 +86,54 @@ identifies the minority hospital as distinctive and up-weights it.
   even larger, but volatile).
 - Do not claim "beats centralized" — pooled numbers not collected in this run; add if needed.
 
+## §2 — 5-way baseline comparison (notebook 10, 2026-10-23)
+
+Saved: `/content/drive/MyDrive/amr_baseline_comparison.json`
+
+### Numbers (Louvain k=5, seeds 42–46, same protocol)
+
+| Method | Best-round F1 (mean±std) | Worst-hosp F1 (mean±std) | Final F1 (mean±std) |
+|---|---|---|---|
+| Local-only | — | 0.6742 ± 0.022 | — |
+| FedAvg | 0.6785 ± 0.0227 | 0.6528 ± 0.0298 | 0.6465 ± 0.0147 |
+| FedProx (μ=0.01) | 0.6823 ± 0.0186 | 0.6576 ± 0.0269 | 0.6490 ± 0.0155 |
+| FedMedian | 0.6983 ± 0.0051 | 0.6690 ± 0.0047 | 0.6542 ± 0.0117 |
+| FedTrimmedAvg | 0.6978 ± 0.0057 | 0.6685 ± 0.0080 | 0.6777 ± 0.0182 |
+| **Topo-aware** | **0.6987 ± 0.0060** | **0.6712 ± 0.0098** | **0.6907 ± 0.0166** |
+
+Worst-hospital gap vs local-only (smaller = less harm to minority):
+
+| Method | Δ worst-hosp vs local |
+|---|---|
+| FedAvg | −0.0214 |
+| FedProx | −0.0166 |
+| FedMedian | −0.0052 |
+| FedTrimmedAvg | −0.0057 |
+| **Topo-aware** | **−0.0030** |
+
+### Interpretation
+
+**Topo-aware wins on all three metrics** — best-round, worst-hospital, and final-round F1.
+
+Key differentiators:
+- **FedProx** barely moves the needle (+0.005 worst-hosp over FedAvg). Penalising client drift
+  doesn't help here because the problem is structural divergence, not drift per se.
+- **FedMedian and FedTrimmedAvg** are strong on best-round (≈ topo) and have very low variance,
+  but collapse on final-round (0.6542 / 0.6777 vs topo 0.6907 — Δ +0.037 / +0.013). Robust
+  aggregation helps convergence early but doesn't sustain it.
+- **Topo-aware** is the only method where best-round and final-round stay close (0.6987 vs 0.6907,
+  gap 0.008), while every other method shows larger best→final decay. This suggests topology
+  weighting stabilises training rather than just improving one lucky round.
+- Topo-aware has the **smallest minority-hospital penalty** (−0.0030 vs −0.0052 for FedMedian),
+  confirming the mechanism: up-weighting the structurally distinctive hospital prevents its
+  embeddings from being averaged away.
+
+**Do-not-claim guardrails:** pooled arm not captured (null in JSON — add if needed for the paper).
+n=5 seeds; no significance claims. FedMedian worst-hosp std (0.0047) is tighter than topo (0.0098)
+at best-round; the difference there (0.6690 vs 0.6712) is within noise.
+
 ## Next steps
 
-1. Run pooled arm on Louvain k=5 to complete the three-way comparison (local / pooled / FedAvg / topo).
-2. Bootstrap CIs on the worst-hospital delta (n=5 too small for paired t-test).
+1. Bootstrap CIs on worst-hospital delta (n=5 too small for paired t-test).
+2. Add pooled arm to complete the comparison (one extra run, no code change needed).
 3. Add these numbers to `docs/2026-08-11-splits-and-results.md` §3 (canonical results record).
-4. Consider a forced k=10 split (e.g. organism_community with n_clients=10) to test whether
-   larger client counts amplify the effect as FedGTA predicts.

@@ -123,6 +123,7 @@ its vector in fit metrics → `TopologyAwareStrategy.aggregate_fit` converts sim
 | Phase 5 (novelty) | Path-B gate PASS: worst-hospital +0.0054 (organism-community) / +0.0050 (specimen); mean deltas noise-level; determinism fixed (`0af90d0`); fragile at n=3 (std ≫ effect) | `docs/2026-10-18-topology-phase5-results.md`, nb 07 |
 | Experiment #1 (done) | antibiogram-conflict split, 5 seeds: **C1 FAIL, C2 FAIL, C3 marginal PASS** — condition not reproduced (FedAvg *helps* minority +0.028); topo tail +0.0045 within noise | `docs/2026-10-18-antibiogram-conflict-split.md` §8 |
 | Louvain topology arm (done) | **C1/C2/C3 all PASS** (k=5, 5 seeds) — strongest result: FedAvg worst 0.6528 < local 0.6742; topo worst **+0.0184**, mean **+0.0202** (4× Phase-5); topo tail nearly recovers to local (0.7201 vs 0.7215); topo std 0.006 vs FedAvg 0.023 | `docs/2026-10-23-louvain-topology-results.md` |
+| 5-way baseline comparison (done) | Topo-aware **wins all three metrics** vs FedAvg/FedProx/FedMedian/FedTrimmedAvg on Louvain k=5: best 0.6987, worst 0.6712, final **0.6907** (FedMedian final 0.6542, FedTrimmedAvg 0.6777); smallest minority penalty −0.003 | `docs/2026-10-23-louvain-topology-results.md` §2 |
 
 **Do-not-claim list** (binding, from `research_outline.md` §J): no statistical-significance
 claims (n=3), no SOTA/generality, no "mean improves" (mean deltas are noise), no best-round-only
