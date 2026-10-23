@@ -5,8 +5,10 @@ few local epochs from the server's current weights, and evaluates the current
 global model on its own held-out test triples.
 
 SIGFPE forensics (notebook sets AMR_DEBUG_INIT=1 before flwr's ray.init): a
-[client-init] line per construction and a [kaiming] line per PyG lazy-weight
-reset (the crash site), both flush=True so they survive the fault.
+[client-init] line per construction, a [bisect] env/subprocess probe once per
+process, and a [kaiming] line per PyG lazy-weight reset (the crash site), all
+flush=True so they survive the fault. FlowerClient also builds its model under
+_zero_weight_init so the actor never calls a generator during construction.
 """
 from __future__ import annotations
 
@@ -14,7 +16,9 @@ import ctypes
 import importlib
 import json
 import os
+from contextlib import contextmanager
 
+import torch
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context
 
@@ -72,12 +76,73 @@ def _install_kaiming_probe() -> None:
         setattr(mod, "_amr_probe", True)
 
 
+# Every RNG-based weight initializer any part of the model construction can hit:
+# PyG's inits module (incl. `inits.uniform(size, value)` for biases), PyG's
+# linear module binding, and torch.nn.init (decoder Linear).
+_RNG_INIT_TARGETS = (
+    ("torch_geometric.nn.inits", "kaiming_uniform"),
+    ("torch_geometric.nn.inits", "glorot"),
+    ("torch_geometric.nn.inits", "uniform"),
+    ("torch_geometric.nn.dense.linear", "kaiming_uniform"),
+    ("torch.nn.init", "kaiming_uniform_"),
+    ("torch.nn.init", "kaiming_normal_"),
+    ("torch.nn.init", "xavier_uniform_"),
+    ("torch.nn.init", "xavier_normal_"),
+    ("torch.nn.init", "uniform_"),
+    ("torch.nn.init", "normal_"),
+    ("torch.nn.init", "trunc_normal_"),
+)
+
+
+@contextmanager
+def _zero_weight_init():
+    """Materialise the model WITHOUT touching a generator — the SIGFPE site.
+
+    The actor's own init weights are dead computation regardless: fit() and
+    evaluate() both start with set_weights(server parameters), and the server's
+    initial global model is built in the driver (where RNG works), so FedAvg
+    starts from the same random model as before and no client ever uses these
+    values. Neutralising the initializers makes client construction independent
+    of whatever the actor's generator state is.
+    """
+    saved, count = [], [0]
+
+    def _zero(*args, **kwargs):
+        hit = None
+        for obj in (*args, *kwargs.values()):
+            if isinstance(obj, torch.Tensor):
+                with torch.no_grad():
+                    obj.zero_()
+                count[0] += 1
+                hit = hit if hit is not None else obj
+        return hit
+
+    for name, attr in _RNG_INIT_TARGETS:
+        try:
+            mod = importlib.import_module(name)
+        except Exception:
+            continue
+        orig = getattr(mod, attr, None)
+        if orig is None:
+            continue
+        saved.append((mod, attr, orig))
+        setattr(mod, attr, _zero)
+    try:
+        yield
+    finally:
+        for mod, attr, orig in saved:
+            setattr(mod, attr, orig)
+    if _debug_on():
+        print(f"[zero-init] zeroed {count[0]} weight tensor(s) without RNG", flush=True)
+
+
 class FlowerClient(NumPyClient):
     def __init__(self, data, cfg: dict, cid: int):
         self.data = data
         self.cfg = cfg
         self.cid = cid
-        self.model = init_model_on(data, cfg)   # materialises lazy params
+        with _zero_weight_init():
+            self.model = init_model_on(data, cfg)   # materialises lazy params
 
     def fit(self, parameters, config):
         set_weights(self.model, parameters)
@@ -102,12 +167,13 @@ _BISECT_DONE = False
 
 
 def _bisect_once(pid: int) -> None:
-    """Once per process: is the actor's RNG path dead, or only the pyg materialize path?
+    """Once per process: NON-FATAL probes only (a SIGFPE here must not kill the run).
 
-    b1 env/thread dump -> b2 fresh subprocess with the SAME env (isolates env-level
-    poisoning from in-process state) -> b3/b4 the same uniform_ op in-process, right
-    before the pyg call that SIGFPEs. A step that SIGFPEs prints its START line first
-    (flush=True), so the last line names the killer.
+    b1 dumps the actor's env/thread/RNG-relevant state; b2 runs the crashing op
+    (cpu + cuda uniform_) in a FRESH subprocess inheriting the actor's env —
+    rc!=0 means the environment itself is poisoned, rc=0 means only this
+    process's state is. The in-process uniform_ tests were dropped: if they
+    faulted they would kill the actor before the zero-init fix is exercised.
     """
     global _BISECT_DONE
     if not _debug_on() or _BISECT_DONE:
@@ -116,7 +182,6 @@ def _bisect_once(pid: int) -> None:
     import subprocess
     import sys
 
-    import torch
     keys = sorted(k for k in os.environ
                   if any(s in k.upper() for s in
                          ("CUDA", "OMP", "MKL", "THREAD", "RAY", "GPU", "NCCL", "PYTORCH")))
@@ -137,13 +202,6 @@ def _bisect_once(pid: int) -> None:
                        capture_output=True, text=True, timeout=120)
     print(f"[bisect b2] rc={p.returncode} out={p.stdout.strip()!r} "
           f"err={p.stderr.strip()[-300:]!r}", flush=True)
-    print("[bisect b3] in-proc cpu uniform start", flush=True)
-    torch.empty(128, 3).uniform_(-.1, .1)
-    print("[bisect b3] ok", flush=True)
-    print("[bisect b4] in-proc cuda uniform start", flush=True)
-    torch.empty(128, 3, device="cuda").uniform_(-.1, .1)
-    torch.cuda.synchronize()
-    print("[bisect b4] ok", flush=True)
 
 
 def client_fn(context: Context):
