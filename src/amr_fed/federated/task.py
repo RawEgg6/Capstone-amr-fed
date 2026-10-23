@@ -167,8 +167,12 @@ def init_model_on(data, cfg: dict):
     use the same patient_history setting)."""
     data = data.to(DEVICE)
     model = make_model(cfg, _tf_dim(data))
+    # Materialise the lazy conv weights under eval(): this forward exists only to
+    # build shapes, and a train-mode pass would draw dropout masks for nothing.
+    model.eval()
     with torch.no_grad():
         model.encode(data.x_dict, data.edge_index_dict)
+    model.train()
     return model
 
 

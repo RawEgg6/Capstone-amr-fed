@@ -5,10 +5,14 @@ few local epochs from the server's current weights, and evaluates the current
 global model on its own held-out test triples.
 
 SIGFPE forensics (notebook sets AMR_DEBUG_INIT=1 before flwr's ray.init): a
-[client-init] line per construction, a [bisect] env/subprocess probe once per
-process, and a [kaiming] line per PyG lazy-weight reset (the crash site), all
-flush=True so they survive the fault. FlowerClient also builds its model under
-_zero_weight_init so the actor never calls a generator during construction.
+[client-init] line per construction, a [bisect] env/full-pipeline-subprocess probe
+once per process, and a [kaiming] line per PyG lazy-weight reset, all flush=True so
+they survive the fault. FlowerClient builds its model under _zero_weight_init so the
+actor never calls a generator during construction, and model.py draws dropout masks
+from the CPU generator, so an actor's training path has no CUDA-RNG op at all.
+AMR_RNG_PROBE=1 (D3 only, never the arms) adds a fatal-if-poisoned in-process
+[rng-probe entry] check at client_fn entry — a SIGFPE stack there means the message
+path already delivered a poisoned RNG; 'ok' means the poison forms later.
 """
 from __future__ import annotations
 
@@ -32,11 +36,35 @@ def _debug_on() -> bool:
     return os.environ.get("AMR_DEBUG_INIT", "").strip().lower() not in ("", "0", "false", "no")
 
 
+def _probe_on() -> bool:
+    return os.environ.get("AMR_RNG_PROBE", "").strip().lower() not in ("", "0", "false", "no")
+
+
 def _fenv_mask() -> int | str:
     try:
         return int(ctypes.CDLL("libm.so.6").fegetexcept())
     except Exception as e:
         return f"err {e}"
+
+
+def _rng_probe(tag: str) -> None:
+    """Fatal-if-poisoned in-process CUDA RNG check (gated on AMR_RNG_PROBE, D3 only).
+
+    SIGFPE cannot be caught, so this may only run where a crash is the datum we
+    want: the stack position [rng-probe {tag}] says the state arriving at that
+    point is already poisoned (client_fn entry = everything the message path and
+    actor startup did), while 'uniform ok' + 'dropout ok' say it is clean and the
+    poison — if any — forms later. Arms never set AMR_RNG_PROBE, so a working run
+    is never killed by a probe.
+    """
+    if not _probe_on():
+        return
+    import torch.nn.functional as F
+    print(f"[rng-probe {tag}] start fenv={_fenv_mask()}", flush=True)
+    torch.empty(64, device=DEVICE).uniform_(-0.1, 0.1)
+    print(f"[rng-probe {tag}] uniform ok", flush=True)
+    F.dropout(torch.randn(128, device=DEVICE), p=0.3, training=True)
+    print(f"[rng-probe {tag}] dropout ok", flush=True)
 
 
 def _install_kaiming_probe() -> None:
@@ -169,11 +197,13 @@ _BISECT_DONE = False
 def _bisect_once(pid: int) -> None:
     """Once per process: NON-FATAL probes only (a SIGFPE here must not kill the run).
 
-    b1 dumps the actor's env/thread/RNG-relevant state; b2 runs the crashing op
-    (cpu + cuda uniform_) in a FRESH subprocess inheriting the actor's env —
-    rc!=0 means the environment itself is poisoned, rc=0 means only this
-    process's state is. The in-process uniform_ tests were dropped: if they
-    faulted they would kill the actor before the zero-init fix is exercised.
+    b1 dumps the actor's env/thread/RNG-relevant state; b2 runs the WHOLE client
+    pipeline (seed -> load graph -> init_model_on with REAL kaiming uniform_ ->
+    train-mode encode -> raw CUDA uniform_/dropout) in a FRESH subprocess that
+    inherits the actor's env. 'sub ALL-OK' = env + pipeline are clean in a fresh
+    process (poison, if any, is live-actor-state only); any failure prints the
+    last stage reached before rc!=0. In-process RNG tests stay out: if they
+    faulted they would kill the actor before the real forensics run.
     """
     global _BISECT_DONE
     if not _debug_on() or _BISECT_DONE:
@@ -189,22 +219,43 @@ def _bisect_once(pid: int) -> None:
           f"interop={torch.get_num_interop_threads()} devs={torch.cuda.device_count()} "
           f"fenv={_fenv_mask()} "
           f"env={{{', '.join(f'{k}={os.environ[k][:60]}' for k in keys)}}}", flush=True)
-    code = ("import torch\n"
-            "print('sub threads', torch.get_num_threads(), 'devs', torch.cuda.device_count())\n"
-            "torch.manual_seed(0)\n"
-            "torch.empty(128, 3).uniform_(-.1, .1)\n"
-            "print('sub cpu-ok')\n"
-            "if torch.cuda.is_available():\n"
-            "    torch.empty(128, 3, device='cuda').uniform_(-.1, .1)\n"
-            "    torch.cuda.synchronize()\n"
-            "    print('sub cuda-ok')\n")
+    if pid != 0:   # one full-pipeline subprocess per run is enough — 5 concurrent
+        # GPU-heavy subprocesses (one per actor) would risk OOM on smaller GPUs
+        print("[bisect b2] skipped (only cid 0 runs the pipeline probe)", flush=True)
+        return
+    import amr_fed
+    src = os.path.dirname(os.path.dirname(os.path.abspath(amr_fed.__file__)))
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import torch, torch.nn.functional as F\n"
+        "from amr_fed.federated.task import (seed_client, read_run_config, "
+        "load_client_graph, init_model_on)\n"
+        "print('sub start threads=%%s devs=%%s' %% (torch.get_num_threads(), "
+        "torch.cuda.device_count()), flush=True)\n"
+        "cfg = read_run_config()\n"
+        "seed_client(cfg, %d)\n"
+        "data = load_client_graph(%d)\n"
+        "print('sub graph-ok', flush=True)\n"
+        "model = init_model_on(data, cfg)\n"
+        "print('sub init-ok (real kaiming uniform_)', flush=True)\n"
+        "model.train()\n"
+        "with torch.no_grad():\n"
+        "    model.encode(data.x_dict, data.edge_index_dict)\n"
+        "print('sub encode-train-ok (cpu-mask dropout)', flush=True)\n"
+        "if torch.cuda.is_available():\n"
+        "    torch.empty(64, device='cuda').uniform_(-.1, .1)\n"
+        "    F.dropout(torch.randn(128, device='cuda'), p=0.3, training=True)\n"
+        "    print('sub cuda-rng-ok', flush=True)\n"
+        "print('sub ALL-OK', flush=True)\n"
+    ) % (src, pid, pid)
     p = subprocess.run([sys.executable, "-c", code],
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True, timeout=240)
     print(f"[bisect b2] rc={p.returncode} out={p.stdout.strip()!r} "
           f"err={p.stderr.strip()[-300:]!r}", flush=True)
 
 
 def client_fn(context: Context):
+    _rng_probe("entry")   # FIRST: if this SIGFPEs, the poison predates all of our code
     cfg = read_run_config()
     pid = int(context.node_config["partition-id"])
     # Ray runs each client in its own process with a fresh RNG; seed it deterministically

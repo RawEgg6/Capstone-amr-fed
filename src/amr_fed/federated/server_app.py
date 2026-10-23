@@ -8,6 +8,8 @@ Phase 5 will swap FedAvg for a topology-aware Strategy subclass here.
 """
 from __future__ import annotations
 
+import os
+
 from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
@@ -42,7 +44,17 @@ def server_fn(context: Context):
     # the server (a separate process from the driver) inits weights with a fresh RNG and
     # every FedAvg run starts from different weights (see task.seed_everything).
     seed_everything(int(cfg.get("seed", 42)))
+    dbg = os.environ.get("AMR_DEBUG_INIT", "").strip().lower() not in ("", "0", "false", "no")
+    if dbg:
+        print(f"[server-init] pid={os.getpid()} "
+              f"vis={os.environ.get('CUDA_VISIBLE_DEVICES')} "
+              f"env AMR_RNG_PROBE={os.environ.get('AMR_RNG_PROBE')}", flush=True)
     init_weights = get_weights(init_model_on(load_client_graph(0), cfg))
+    if dbg:
+        # real-RNG init (no zero-init wrap here): "model OK" = the server side built
+        # its weights fine; compare pid with the notebook's "driver pid" print —
+        # same pid means the server runs in the driver process, not a Ray actor.
+        print("[server-init] model OK (real RNG, no wrap)", flush=True)
     common = dict(
         fraction_fit=1.0,
         fraction_evaluate=1.0,
