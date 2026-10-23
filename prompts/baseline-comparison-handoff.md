@@ -119,32 +119,59 @@ callers pass only `model, data, epochs`.
 Create `notebooks/10_baseline_comparison.ipynb`. It runs all 5 methods on the Louvain k=5
 split (the same setup as notebook 09), collects results, and prints a comparison table.
 
+**NOTE: FedAvg and Topology arms are already done** (notebook 09, results saved to Drive).
+Do NOT rerun them. Load the saved results from Drive in cell 6, then run only the three
+new baselines.
+
 **Cells to include (in order):**
 
 ```
-Cell 1:  setup (git clone/pull, pip install)        — copy from nb 09 cell 1
-Cell 2:  mount Drive + ARMD_DIR                     — copy from nb 09 cell 2
-Cell 3:  imports + sanity check                     — copy from nb 09 cell 3
+Cell 1:  setup (git clone/pull, pip install)         — copy from nb 09 cell 1
+Cell 2:  mount Drive + ARMD_DIR                      — copy from nb 09 cell 2
+Cell 3:  imports + sanity check                      — copy from nb 09 cell 3
 Cell 4:  load cohort once (df = load_cohort_frame()) — copy from nb 09 cell 4
-Cell 5:  smoke check (Louvain k=5 validity)          — copy from nb 09 cell 5, k=5 only
-Cell 6:  FedAvg arm      — copy nb 09 cell 6  (lv5_fed)
-Cell 7:  Topology arm    — copy nb 09 cell 7  (lv5_topo)
-Cell 8:  FedProx arm     — new (lv5_fedprox)
-Cell 9:  FedMedian arm   — new (lv5_fedmedian)
-Cell 10: FedTrimmedAvg arm — new (lv5_fedtrimmedavg)
-Cell 11: comparison table + verdict
+Cell 5:  smoke check (Louvain k=5 validity)           — copy from nb 09 cell 5, k=5 only
+Cell 6:  load existing FedAvg + Topo results from Drive (no rerun)
+Cell 7:  FedProx arm     — new (lv5_fedprox)
+Cell 8:  FedMedian arm   — new (lv5_fedmedian)
+Cell 9:  FedTrimmedAvg arm — new (lv5_fedtrimmedavg)
+Cell 10: comparison table + verdict
 ```
 
-Each new arm cell (8, 9, 10) follows the exact same pattern as nb 09 cells 6/7:
+Cell 6 loads the already-computed results instead of rerunning:
+```python
+# 6) Load existing FedAvg + Topo results from notebook 09 (already computed)
+import json
+with open('/content/drive/MyDrive/amr_louvain_k5_verdict.json') as f:
+    nb09 = json.load(f)
+# Reconstruct the run-dict shape run_multiseed returns, using the saved numbers
+lv5_fed = {
+    'fedavg_best':  nb09['fed']['best'],
+    'worst_fed':    nb09['fed']['worst'],
+    'worst_local':  nb09['fed']['worst_local'],
+    'fedavg_final': nb09['fed']['final'],
+    'runs': [],  # per-seed breakdown not needed for the summary table
+}
+lv5_topo = {
+    'fedavg_best':  nb09['topo']['best'],
+    'worst_fed':    nb09['topo']['worst'],
+    'worst_local':  nb09['topo']['worst_local'],
+    'fedavg_final': nb09['topo']['final'],
+    'runs': [],
+}
+print('Loaded FedAvg best:', nb09['fed']['best'], '| Topo best:', nb09['topo']['best'])
+```
+
+Each new arm cell (7, 8, 9) follows the exact same pattern as nb 09 cells 6/7:
 - `os.environ.pop('AMR_RNG_PROBE', None)` at the top (mandatory — crashes if set)
 - `ray.shutdown()` before the run
 - reload amr_fed modules
 - call `run_multiseed` with `strategy='fedprox'` / `'fedmedian'` / `'fedtrimmedavg'`
 - same seeds (42–46), same split, same protocol (rounds=8, local_epochs=4, hidden=128)
 
-Example cell 8:
+Example cell 7:
 ```python
-# 8) FedProx arm (μ=0.01)
+# 7) FedProx arm (μ=0.01)
 import os, ray
 os.environ.pop('AMR_RNG_PROBE', None)
 os.environ['AMR_DEBUG_INIT'] = '1'
@@ -238,15 +265,14 @@ it means the federated stack isn't installed; just verify the imports don't erro
 ## Order to run cells on Colab (notebook 10)
 
 1. Run cells 1–5 (setup → smoke). Confirm `SMOKE PASS k=5`.
-2. Run cell 6 (FedAvg) — baseline. Should match nb 09 numbers ≈ 0.6785 best.
-3. Run cell 7 (Topology) — should match nb 09 ≈ 0.6987 best.
-4. Run cell 8 (FedProx). FedProx should improve on FedAvg slightly or match it.
-5. Run cell 9 (FedMedian).
-6. Run cell 10 (FedTrimmedAvg).
-7. Run cell 11 (table + verdict). Paste the JSON block back into the original session.
+2. Run cell 6 (load saved FedAvg + Topo from Drive) — instant, no training.
+3. Run cell 7 (FedProx). FedProx should improve on FedAvg slightly or match it.
+4. Run cell 8 (FedMedian).
+5. Run cell 9 (FedTrimmedAvg).
+6. Run cell 10 (table + verdict). Paste the JSON block back into the original session.
 
-Each arm takes ~15–20 min on Colab T4 (5 seeds × 8 rounds). Total runtime ≈ 1.5–2 hours.
-Run cells sequentially (not all at once) so Ray actors don't compete for GPU memory.
+Each new arm takes ~15–20 min on Colab T4 (5 seeds × 8 rounds). Total runtime ≈ 45–60 min
+(3 arms only, not 5). Run cells sequentially so Ray actors don't compete for GPU memory.
 
 ---
 
