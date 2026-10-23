@@ -98,6 +98,54 @@ class FlowerClient(NumPyClient):
         return 0.0, n, {"macro_f1": f1, "auroc": auc, "cid": self.cid}
 
 
+_BISECT_DONE = False
+
+
+def _bisect_once(pid: int) -> None:
+    """Once per process: is the actor's RNG path dead, or only the pyg materialize path?
+
+    b1 env/thread dump -> b2 fresh subprocess with the SAME env (isolates env-level
+    poisoning from in-process state) -> b3/b4 the same uniform_ op in-process, right
+    before the pyg call that SIGFPEs. A step that SIGFPEs prints its START line first
+    (flush=True), so the last line names the killer.
+    """
+    global _BISECT_DONE
+    if not _debug_on() or _BISECT_DONE:
+        return
+    _BISECT_DONE = True
+    import subprocess
+    import sys
+
+    import torch
+    keys = sorted(k for k in os.environ
+                  if any(s in k.upper() for s in
+                         ("CUDA", "OMP", "MKL", "THREAD", "RAY", "GPU", "NCCL", "PYTORCH")))
+    print(f"[bisect b1] cid={pid} threads={torch.get_num_threads()} "
+          f"interop={torch.get_num_interop_threads()} devs={torch.cuda.device_count()} "
+          f"fenv={_fenv_mask()} "
+          f"env={{{', '.join(f'{k}={os.environ[k][:60]}' for k in keys)}}}", flush=True)
+    code = ("import torch\n"
+            "print('sub threads', torch.get_num_threads(), 'devs', torch.cuda.device_count())\n"
+            "torch.manual_seed(0)\n"
+            "torch.empty(128, 3).uniform_(-.1, .1)\n"
+            "print('sub cpu-ok')\n"
+            "if torch.cuda.is_available():\n"
+            "    torch.empty(128, 3, device='cuda').uniform_(-.1, .1)\n"
+            "    torch.cuda.synchronize()\n"
+            "    print('sub cuda-ok')\n")
+    p = subprocess.run([sys.executable, "-c", code],
+                       capture_output=True, text=True, timeout=120)
+    print(f"[bisect b2] rc={p.returncode} out={p.stdout.strip()!r} "
+          f"err={p.stderr.strip()[-300:]!r}", flush=True)
+    print("[bisect b3] in-proc cpu uniform start", flush=True)
+    torch.empty(128, 3).uniform_(-.1, .1)
+    print("[bisect b3] ok", flush=True)
+    print("[bisect b4] in-proc cuda uniform start", flush=True)
+    torch.empty(128, 3, device="cuda").uniform_(-.1, .1)
+    torch.cuda.synchronize()
+    print("[bisect b4] ok", flush=True)
+
+
 def client_fn(context: Context):
     cfg = read_run_config()
     pid = int(context.node_config["partition-id"])
@@ -116,6 +164,7 @@ def client_fn(context: Context):
               f"x={{{', '.join(f'{k}:{tuple(v.shape)}' for k, v in data.x_dict.items())}}} "
               f"e={{{', '.join(f'{str(k)}:{int(v.shape[1])}' for k, v in data.edge_index_dict.items())}}} "
               f"tf={tuple(tf.shape) if tf is not None else None}", flush=True)
+        _bisect_once(pid)
     client = FlowerClient(data, cfg, pid)
     if _debug_on():
         print(f"[client-init cid={pid}] model OK", flush=True)
