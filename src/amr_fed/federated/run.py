@@ -134,10 +134,14 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     the same total epochs as FedAvg's per-round local epochs x rounds).
     strategy="fedavg" (default) runs plain FedAvg; strategy="topology" swaps the server
     aggregation for fingerprint-similarity mixing (Phase 5: TopologyAwareStrategy with
-    topo_temperature / topo_mode). Everything else — graphs, budgets, seeds, evaluation —
+    topo_temperature / topo_mode); "fedprox" / "fedmedian" / "fedtrimmedavg" run the
+    Phase-6 federated baselines under the identical protocol (server_app.py picks the
+    Flower strategy; FedProx additionally ships proximal_mu to clients — see
+    task.local_train). Everything else — graphs, budgets, seeds, evaluation —
     is identical, so the comparison is exactly apples-to-apples."""
-    if strategy not in ("fedavg", "topology"):
-        raise ValueError(f"strategy must be 'fedavg' or 'topology', got {strategy!r}")
+    if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg"):
+        raise ValueError(f"strategy must be one of 'fedavg', 'topology', 'fedprox', "
+                         f"'fedmedian', 'fedtrimmedavg', got {strategy!r}")
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
     from flwr.simulation import run_simulation
 
@@ -212,7 +216,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     pooled_str = f"{pl_avg:.4f}" + ("" if pl_worst is None else f" (worst {pl_worst})")
     strat_str = ("topology-aware "
                  f"(mode={topo_mode}, T={topo_temperature})" if strategy == "topology"
-                 else "FedAvg")
+                 else {"fedavg": "FedAvg", "fedprox": "FedProx",
+                       "fedmedian": "FedMedian", "fedtrimmedavg": "FedTrimmedAvg"}.get(strategy, strategy))
     print(f"\n=== Phase 3 comparison ({tag}) [{strat_str}] ===  [macro-F1 | AUROC]")
     print(f"  pooled (centralized, same protocol): {pooled_str} | AUROC {pl_auc:.4f}")
     print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final} | AUROC {fed_auc_best}")

@@ -173,8 +173,13 @@ class FlowerClient(NumPyClient):
             self.model = init_model_on(data, cfg)   # materialises lazy params
 
     def fit(self, parameters, config):
+        # FedProx: the server puts mu in the fit config; the proximal reference is the
+        # global weights arriving with it (captured before set_weights mutates the model).
+        proximal_mu = float(config.get("proximal_mu", 0.0))
+        global_weights = parameters if proximal_mu > 0.0 else None
         set_weights(self.model, parameters)
-        local_train(self.model, self.data, self.cfg["local_epochs"])
+        local_train(self.model, self.data, self.cfg["local_epochs"],
+                    proximal_mu=proximal_mu, global_weights=global_weights)
         metrics: dict = {}
         # Phase 5: hand the server our topology fingerprint (driver-computed from our
         # patient subset and stored in run_config.json). Absent -> the server falls back

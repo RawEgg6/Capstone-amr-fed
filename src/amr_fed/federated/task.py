@@ -195,7 +195,12 @@ def set_weights(model, weights) -> None:
     model.load_state_dict(sd, strict=True)
 
 
-def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float = 1e-4) -> float:
+def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float = 1e-4,
+                proximal_mu: float = 0.0, global_weights=None) -> float:
+    """Local epochs of class-weighted BCE. proximal_mu > 0 adds the FedProx term
+    (mu/2)*||w - w_global||^2 to every step's loss, where global_weights is the
+    server's parameter list (get_weights format, numpy) captured before training.
+    Defaults (mu=0, no global_weights) are bit-identical to the pre-FedProx trainer."""
     data = data.to(DEVICE)
     tr = data.train_mask.to(DEVICE)
     tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
@@ -204,6 +209,12 @@ def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float 
         tf = tf.to(DEVICE)
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=data.train_pos_weight.to(DEVICE))
+    # FedProx: pin the reference ONCE before the epoch loop (the global model does
+    # not move while this client trains).
+    global_tensors = None
+    if proximal_mu > 0.0 and global_weights is not None:
+        global_tensors = [torch.as_tensor(w, dtype=p.dtype, device=p.device)
+                          for w, p in zip(global_weights, model.parameters())]
     model.train()
     loss = torch.tensor(0.0)
     for _ in range(epochs):
@@ -211,6 +222,10 @@ def local_train(model, data, epochs: int, lr: float = 1e-3, weight_decay: float 
         out = model(data.x_dict, data.edge_index_dict, tri[:, tr],
                     tf[tr] if tf is not None else None)
         loss = loss_fn(out, y[tr])
+        if global_tensors is not None:
+            prox = sum((p - g).pow(2).sum()
+                       for p, g in zip(model.parameters(), global_tensors))
+            loss = loss + (proximal_mu / 2.0) * prox
         loss.backward()
         opt.step()
     out = float(loss.item())
