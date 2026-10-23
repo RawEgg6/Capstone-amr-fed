@@ -122,6 +122,7 @@ its vector in fit metrics → `TopologyAwareStrategy.aggregate_fit` converts sim
 | Hard topology splits | headroom gate **FAIL in the informative direction**: on topology-divergent splits FedAvg *beats* pooled (size-weighted pooled loss starves rare communities; Louvain 5% community: local 0.7423 → pooled 0.6735 → FedAvg 0.7308) | `docs/2026-08-11-splits-and-results.md` §3, §7 |
 | Phase 5 (novelty) | Path-B gate PASS: worst-hospital +0.0054 (organism-community) / +0.0050 (specimen); mean deltas noise-level; determinism fixed (`0af90d0`); fragile at n=3 (std ≫ effect) | `docs/2026-10-18-topology-phase5-results.md`, nb 07 |
 | Experiment #1 (done) | antibiogram-conflict split, 5 seeds: **C1 FAIL, C2 FAIL, C3 marginal PASS** — condition not reproduced (FedAvg *helps* minority +0.028); topo tail +0.0045 within noise | `docs/2026-10-18-antibiogram-conflict-split.md` §8 |
+| Louvain topology arm (done) | **C1/C2/C3 all PASS** (k=5, 5 seeds) — strongest result: FedAvg worst 0.6528 < local 0.6742; topo worst **+0.0184**, mean **+0.0202** (4× Phase-5); topo tail nearly recovers to local (0.7201 vs 0.7215); topo std 0.006 vs FedAvg 0.023 | `docs/2026-10-23-louvain-topology-results.md` |
 
 **Do-not-claim list** (binding, from `research_outline.md` §J): no statistical-significance
 claims (n=3), no SOTA/generality, no "mean improves" (mean deltas are noise), no best-round-only
@@ -161,10 +162,10 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 ## Active work & TODOs
 
 **A. Active / blocked**
-1. Experiment #1 (antibiogram-conflict) **complete** — C1/C2 FAIL, C3 marginal PASS. Results
-   filled in `docs/2026-10-18-antibiogram-conflict-split.md` §8 (2026-10-23). Do NOT re-tune.
-2. SIGFPE forensics resolved: `AMR_RNG_PROBE` must be unset before arm cells (D3 diagnostic
-   only). Fix: `os.environ.pop("AMR_RNG_PROBE", None)` at top of arm cells.
+1. Louvain topology arm **complete** (2026-10-23) — strongest result yet. See results landscape.
+2. Next priority: run pooled arm on Louvain k=5 (complete the 4-way comparison) + bootstrap CIs
+   on worst-hospital delta. Then organism_community with n_clients=10 (Louvain can't make 10).
+3. SIGFPE fix: `os.environ.pop("AMR_RNG_PROBE", None)` must be in every arm cell top (D3 only).
 
 **B. Next experiments (priority order, per docs)**
 1. Seeds 42–46 (5) + paired per-seed tests/bootstrap CIs on the worst-hospital delta.
