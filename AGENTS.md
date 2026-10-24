@@ -122,8 +122,8 @@ its vector in fit metrics → `TopologyAwareStrategy.aggregate_fit` converts sim
 | Hard topology splits | headroom gate **FAIL in the informative direction**: on topology-divergent splits FedAvg *beats* pooled (size-weighted pooled loss starves rare communities; Louvain 5% community: local 0.7423 → pooled 0.6735 → FedAvg 0.7308) | `docs/2026-08-11-splits-and-results.md` §3, §7 |
 | Phase 5 (novelty) | Path-B gate PASS: worst-hospital +0.0054 (organism-community) / +0.0050 (specimen); mean deltas noise-level; determinism fixed (`0af90d0`); fragile at n=3 (std ≫ effect) | `docs/2026-10-18-topology-phase5-results.md`, nb 07 |
 | Experiment #1 (done) | antibiogram-conflict split, 5 seeds: **C1 FAIL, C2 FAIL, C3 marginal PASS** — condition not reproduced (FedAvg *helps* minority +0.028); topo tail +0.0045 within noise | `docs/2026-10-18-antibiogram-conflict-split.md` §8 |
-| Louvain topology arm (done) | **C1/C2/C3 all PASS** (k=5, 5 seeds) — strongest result: FedAvg worst 0.6528 < local 0.6742; topo worst **+0.0184**, mean **+0.0202** (4× Phase-5); topo tail nearly recovers to local (0.7201 vs 0.7215); topo std 0.006 vs FedAvg 0.023 | `docs/2026-10-23-louvain-topology-results.md` |
-| 5-way baseline comparison (done) | Topo-aware **wins all three metrics** vs FedAvg/FedProx/FedMedian/FedTrimmedAvg on Louvain k=5: best 0.6987, worst 0.6712, final **0.6907** (FedMedian final 0.6542, FedTrimmedAvg 0.6777); smallest minority penalty −0.003 | `docs/2026-10-23-louvain-topology-results.md` §2 |
+| Louvain topology arm (done, corrected 2026-10-24) | `louvain_split(5)` actually yields **3 hospitals** (~73/21/5%). Topo-aware beats FedAvg on weighted best-round F1 (0.6987 vs 0.6785, std 0.006 vs 0.023) and beats its own local model on the largest hospital in 5/5 seeds (+0.024); on the middle/smallest hospitals both FedAvg and topo are *worse than local-only* (topo less so). Topo weights are near-uniform (~1/3 each) → **uniform-weight control (T=inf) not yet run**. C1/C2/C3 and "minority hospital" framing retired | `docs/2026-10-23-louvain-topology-results.md` |
+| 5-way baseline comparison (nb10, aggregates only) | FedMedian / FedTrimmedAvg / Topo are indistinguishable on best-round (≈0.698) and worst-hospital (≈0.67); final-round Topo 0.6786 ≈ FedTrimmedAvg 0.6777 > FedMedian 0.6542 > FedProx 0.6490 > FedAvg 0.6457. Topo does **not** clearly beat the robust baselines; earlier "wins all three metrics / final 0.6907" claim withdrawn | `docs/2026-10-23-louvain-topology-results.md` §6 |
 
 **Do-not-claim list** (binding, from `research_outline.md` §J): no statistical-significance
 claims (n=3), no SOTA/generality, no "mean improves" (mean deltas are noise), no best-round-only
@@ -163,9 +163,9 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 ## Active work & TODOs
 
 **A. Active / blocked**
-1. Louvain topology arm **complete** (2026-10-23) — strongest result yet. See results landscape.
-2. Next priority: run pooled arm on Louvain k=5 (complete the 4-way comparison) + bootstrap CIs
-   on worst-hospital delta. Then organism_community with n_clients=10 (Louvain can't make 10).
+1. Louvain re-run with per-hospital output (nb11) **done 2026-10-24** — see corrected results landscape.
+2. Next priority: (a) uniform-weight control (`topo_temperature=inf`) on Louvain; (b) 10-hospital
+   `organism_community` run with FedAvg / Topo / Uniform (`notebooks/12_ten_hospitals.ipynb`); (c) personalization.
 3. SIGFPE fix: `os.environ.pop("AMR_RNG_PROBE", None)` must be in every arm cell top (D3 only).
 
 **B. Next experiments (priority order, per docs)**

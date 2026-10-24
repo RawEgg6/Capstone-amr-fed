@@ -1,139 +1,121 @@
-# Louvain topology arm — results (2026-10-23)
+# Louvain topology arm — results (rewritten 2026-10-24)
 
-**Notebook:** `notebooks/09_louvain_topology.ipynb`
-**Saved:** `/content/drive/MyDrive/amr_louvain_k5_verdict.json`, `amr_louvain_k10_verdict.json`
+**Notebooks:** `09_louvain_topology` (first run, aggregates only), `10_baseline_comparison`
+(5-way, aggregates only), **`11_louvain_per_hospital`** (re-run with every per-hospital number —
+the source of truth for this doc). Raw: `/content/drive/MyDrive/amr_louvain_k5_full.json`.
 
-## Background
+> **Correction notice (2026-10-24).** An earlier version of this file called the setup "k=5",
+> described a "minority hospital", reported topology-aware final-round F1 as 0.6907, and claimed
+> topology-aware "wins all three metrics". Per-hospital data (nb11) shows those statements were
+> wrong or unsupported; they were removed. What remains below is only what the nb11 output backs.
 
-Phase 5 (organism-community / specimen splits) showed topology-aware aggregation beats FedAvg
-by +0.005 on the worst hospital — real but fragile at n=3. The Louvain split was identified
-earlier as the one case where FedAvg *underperforms local-only* (FedAvg 0.7308 < local 0.7423,
-`docs/2026-08-11-splits-and-results.md` §7), but the topology arm had never been run there.
-This experiment closes that gap.
+## 1. What the split actually is
 
-Design fixed before running: same C1/C2/C3 criteria as Experiment #1, 5 seeds (42–46),
-v2 protocol (rounds=8, local_epochs=4, local_only_epochs=32, hidden=128), topology arm =
-distinctiveness T=1.0 (the validated Phase-5 mode).
+`louvain_split(n_clients=5)` returns **3 hospitals**, not 5 — Louvain on the organism–antibiotic
+graph finds 3 communities after greedy packing (`n_clients` is only an upper bound; `run_fedavg`
+self-heals to the real count). Asking for 10 gives the same 3. The partition depends on the seed,
+giving **3 distinct partitions across seeds 42–46**:
 
-## Results (k=5)
+| Seeds | Hospital sizes (patients) |
+|---|---|
+| 42, 46 | 49,348 / 14,204 / 3,456 |
+| 43, 45 | 49,113 / 14,190 / 3,705 |
+| 44 | 46,960 / 5,857 / 14,191 |
 
-| Arm | Best-round F1 | Worst-hosp F1 | Final-round F1 |
-|---|---|---|---|
-| Local-only | — | 0.6742 ± 0.0220 | — |
-| FedAvg | 0.6785 ± 0.0227 | 0.6528 ± 0.0298 | 0.6465 ± 0.0147 |
-| Topology-aware | **0.6987 ± 0.0060** | **0.6712 ± 0.0098** | **0.6907 ± 0.0166** |
+Always one giant hospital (~49k, ≈73%), one ~14k (≈21%; ~6k in seed 44), one ~4k (≈5%).
+Hospital ids are **not** ordered by size (seed 44's H1 is the smallest). "Largest / middle /
+smallest" below mean by patient count. Protocol: v2 (rounds=8, local_epochs=4,
+local_only_epochs=32, hidden=128), 5 seeds (42–46), macro-F1; FedAvg/Topo use the best round
+unless stated. Topology arm = distinctiveness, T=1.0.
 
-Tail hospital (highest client id) per seed:
+## 2. Per-hospital results (mean ± std over 5 seeds)
 
-| Seed | FedAvg | Topo |
+| Hospital | n (typical) | Local-only | Pooled | FedAvg | Topo-aware |
+|---|---|---|---|---|---|
+| Largest | ~48.8k | 0.6741 ± 0.022 | 0.6766 | 0.6773 ± 0.022 | **0.6986 ± 0.005** |
+| Middle | ~14.2k | **0.6932 ± 0.022** | 0.6260 | 0.6529 ± 0.030 | 0.6700 ± 0.010 |
+| Smallest | ~4.0k | **0.7434 ± 0.015** | 0.7033 | 0.7230 ± 0.025 | 0.7384 ± 0.017 |
+
+Change vs local-only, same hospital (positive = federation helped):
+
+| Hospital | FedAvg | Topo-aware |
 |---|---|---|
-| 42 | 0.7296 | 0.7380 |
-| 43 | 0.6943 | 0.7192 |
-| 44 | 0.6809 | 0.6762 |
-| 45 | 0.7048 | 0.7475 |
-| 46 | 0.7196 | 0.7197 |
-| **Mean** | **0.7058** | **0.7201** |
+| Largest | +0.003 (better in 2/5 seeds) | **+0.024 (better in 5/5)** |
+| Middle | −0.040 (1/5) | −0.023 (1/5) |
+| Smallest | −0.020 (1/5) | −0.005 (1/5) |
 
-Local-only tail mean: 0.7215.
+## 3. Aggregate view
 
-### Criterion verdict (k=5)
+| Metric | Local-only | Pooled | FedAvg | Topo-aware |
+|---|---|---|---|---|
+| Weighted-avg F1 (best round) | 0.6825 ± 0.018 | 0.6732 ± 0.021 | 0.6785 ± 0.023 | **0.6987 ± 0.006** |
+| Final-round F1 | n/a | n/a | 0.6457 ± 0.015 | 0.6786 ± 0.021 |
+| Worst hospital (each seed's min) | 0.6741 ± 0.022 | 0.6260 ± 0.025 | 0.6529 ± 0.030 | 0.6700 ± 0.010 |
+| Weighted AUROC | 0.8317 | 0.8281 | 0.8163 ± 0.010 | 0.8280 ± 0.007 |
 
-| Criterion | Result | Value |
-|---|---|---|
-| **C1** — FedAvg hurts minority (`worst_fed ≤ local_worst − 0.01`) | **PASS** | 0.6528 ≤ 0.6742 − 0.01 = 0.6642 ✓ |
-| **C2** — Path-B gate (`Δworst ≥ 0.005` or `Δmean ≥ 0.005`) | **PASS** | Δmean = +0.0202, Δworst = +0.0184 (both ≥ 0.005) |
-| **C3** — topo raises the tail (tail_topo > tail_fedavg) | **PASS** | 0.7201 vs 0.7058 (+0.0143); topo nearly recovers to local (0.7215) |
+Topo-aware beats FedAvg on weighted-avg F1 in 5/5 seeds and on worst-hospital in 3/5.
 
-## Results (k=10)
+## 4. What this supports, and what it does not
 
-Numbers are essentially identical to k=5. **This is expected, not a bug:** `louvain_split`
-lets NetworkX determine the number of communities naturally; on ARMD's organism-antibiotic
-graph it finds ~5 communities regardless of the `n_clients` request. When Louvain yields fewer
-communities than `n_clients`, `run_fedavg` self-heals to `max(hospital)+1`, so k=10 collapsed
-back to the same 5-hospital assignment as k=5. The `docs/` note in `partition.py` documents
-this. The k=10 arm is therefore a repeat of k=5 under a different label and contributes no new
-evidence.
+**Supported**
+- Topology-aware aggregation beats FedAvg on this split: +0.020 weighted best-round F1, with
+  much lower seed variance (std 0.006 vs 0.023); AUROC is also close to local-only
+  (0.8280 vs 0.8317) where FedAvg's is lower (0.8163).
+- The clearest per-hospital effect is the **largest hospital**: topo beats its own local model
+  in 5/5 seeds (+0.024); FedAvg does not (+0.003).
+- On the two smaller hospitals **both** federated methods are worse than training alone; topo is
+  closer to local than FedAvg. Neither "rescues" them.
+- Pooled is not a ceiling here: it is below local-only on average (0.6732 vs 0.6825) and
+  collapses on the middle hospital (0.626) — size-weighted loss under-trains it.
 
-**Implication for future k=10 experiments:** use a split that explicitly creates 10 hospitals
-(e.g. `label_dirichlet` / `organism_community` with `n_clients=10`) rather than Louvain, which
-is resolution-limited by the graph's natural community structure.
+**Not supported — do not claim**
+- ~~"Topo beats local-only for the minority hospital"~~ — it does not for any hospital except the largest.
+- ~~"Worst-hospital Δ vs local = −0.021 (FedAvg) / −0.003 (topo)"~~ — a worst-vs-worst comparison
+  mixes different hospitals (local's worst is the largest hospital in 5/5 seeds; federated
+  methods' worst is the middle one in 4/5). Use the same-hospital deltas in §2.
+- ~~"Topo wins final-round by +0.044"~~ — corrected: 0.6786 vs 0.6457 = **+0.033**. nb09/nb10's
+  0.6907 did not reproduce in nb11 (best-round, worst-hospital and FedAvg numbers did match).
+- ~~"Topo up-weights the structurally distinctive hospital"~~ — see §5: the weights are near-uniform.
+- No significance claims: n=5 over 3 distinct partitions; local-only is itself unstable
+  (seed 44: local on the largest hospital 0.632 vs 0.67–0.69 elsewhere, which inflates both
+  federated methods' apparent gain in that seed).
 
-## Summary and interpretation
+## 5. Open issue: is it topology, or just uniform averaging?
 
-This is the strongest topology-aware result in the project:
+Topology weights logged in nb11 sit in a narrow band (≈0.28–0.40 per hospital; seed 44 up to
+0.22–0.50), i.e. close to **1/3 each**. FedAvg uses size weights ≈ 0.73 / 0.21 / 0.05. So the
+topology arm largely moves weight *away* from the giant hospital toward the small ones. That
+difference alone (uniform vs size weighting) could explain the gain. The needed control is the
+`topo_temperature=inf` arm (uniform weights) under the same protocol — not yet run.
+Also: `topo_weight_client_{i}` in `strategy.py` is indexed by *result order* in each round (Flower
+returns results in arbitrary order), not by hospital id, so the logged per-client weights appear to
+rotate between rounds. Aggregation itself is consistent within a round; only the logging labels are
+unreliable.
 
-- **Δmean best-round: +0.0202** (vs Phase-5 +0.005 — 4× larger effect)
-- **Δworst: +0.0184** (Phase-5 was +0.005)
-- **Variance reduction:** topo std 0.006 vs FedAvg std 0.023 on best-round F1 — topology-aware
-  is not only better but markedly more stable across seeds.
-- **Tail recovery:** topo tail mean 0.7201 vs local-only 0.7215 — the resistant-minority
-  hospital is nearly restored to what it would have achieved training alone.
+## 6. Baselines (notebook 10 — aggregates only, per-hospital data not saved)
 
-**Why Louvain shows a larger effect than the Phase-5 splits:**
-The Louvain communities correspond to structurally coherent subgraphs in the organism-antibiotic
-test graph. Each hospital inherits a distinct set of bug-drug pairs; the GNN's message-passing
-representations are genuinely different across hospitals in a way that scalar label skew
-(antibiogram-conflict, label-Dirichlet) does not reproduce. Size-weighted FedAvg follows the
-majority community and distorts the minority hospital's edge embeddings; the topology
-fingerprint (which captures graph degree, homophily, and resistance-history structure) correctly
-identifies the minority hospital as distinctive and up-weights it.
+Same protocol, seeds 42–46. FedAvg and Topo rows reproduced exactly in nb11; the other three were
+**not re-run** and are taken from the nb10 output.
 
-**Do-not-claim guardrails (from `research_outline.md` §J):**
-- n=5 seeds; do not claim statistical significance.
-- Mean improvement (+0.020) is large enough to report directionally, but report with std and
-  note that seed 44 is an outlier (topo tail 0.6762 < FedAvg 0.6809 on that seed).
-- Report final-round alongside best-round (final: topo 0.6907 vs FedAvg 0.6465, Δ +0.044 —
-  even larger, but volatile).
-- Do not claim "beats centralized" — pooled numbers not collected in this run; add if needed.
-
-## §2 — 5-way baseline comparison (notebook 10, 2026-10-23)
-
-Saved: `/content/drive/MyDrive/amr_baseline_comparison.json`
-
-### Numbers (Louvain k=5, seeds 42–46, same protocol)
-
-| Method | Best-round F1 (mean±std) | Worst-hosp F1 (mean±std) | Final F1 (mean±std) |
+| Method | Best-round F1 | Worst-hospital F1 | Final-round F1 |
 |---|---|---|---|
-| Local-only | — | 0.6742 ± 0.022 | — |
-| FedAvg | 0.6785 ± 0.0227 | 0.6528 ± 0.0298 | 0.6465 ± 0.0147 |
+| Local-only | n/a | 0.6741 ± 0.022 | n/a |
+| FedAvg | 0.6785 ± 0.0227 | 0.6529 ± 0.030 | 0.6457 ± 0.015 |
 | FedProx (μ=0.01) | 0.6823 ± 0.0186 | 0.6576 ± 0.0269 | 0.6490 ± 0.0155 |
 | FedMedian | 0.6983 ± 0.0051 | 0.6690 ± 0.0047 | 0.6542 ± 0.0117 |
 | FedTrimmedAvg | 0.6978 ± 0.0057 | 0.6685 ± 0.0080 | 0.6777 ± 0.0182 |
-| **Topo-aware** | **0.6987 ± 0.0060** | **0.6712 ± 0.0098** | **0.6907 ± 0.0166** |
+| **Topo-aware** | **0.6987 ± 0.0062** | 0.6700 ± 0.0095 | 0.6786 ± 0.0205 |
 
-Worst-hospital gap vs local-only (smaller = less harm to minority):
+Reading: FedProx ≈ FedAvg. FedMedian, FedTrimmedAvg and Topo are statistically
+indistinguishable on best-round and worst-hospital. On final-round only FedMedian trails;
+Topo (0.6786) ≈ FedTrimmedAvg (0.6777). **Topo does not clearly win against the robust
+baselines.** Pooled is not in this table's source run (use §3).
 
-| Method | Δ worst-hosp vs local |
-|---|---|
-| FedAvg | −0.0214 |
-| FedProx | −0.0166 |
-| FedMedian | −0.0052 |
-| FedTrimmedAvg | −0.0057 |
-| **Topo-aware** | **−0.0030** |
+## 7. Next steps
 
-### Interpretation
-
-**Topo-aware wins on all three metrics** — best-round, worst-hospital, and final-round F1.
-
-Key differentiators:
-- **FedProx** barely moves the needle (+0.005 worst-hosp over FedAvg). Penalising client drift
-  doesn't help here because the problem is structural divergence, not drift per se.
-- **FedMedian and FedTrimmedAvg** are strong on best-round (≈ topo) and have very low variance,
-  but collapse on final-round (0.6542 / 0.6777 vs topo 0.6907 — Δ +0.037 / +0.013). Robust
-  aggregation helps convergence early but doesn't sustain it.
-- **Topo-aware** is the only method where best-round and final-round stay close (0.6987 vs 0.6907,
-  gap 0.008), while every other method shows larger best→final decay. This suggests topology
-  weighting stabilises training rather than just improving one lucky round.
-- Topo-aware has the **smallest minority-hospital penalty** (−0.0030 vs −0.0052 for FedMedian),
-  confirming the mechanism: up-weighting the structurally distinctive hospital prevents its
-  embeddings from being averaged away.
-
-**Do-not-claim guardrails:** pooled arm not captured (null in JSON — add if needed for the paper).
-n=5 seeds; no significance claims. FedMedian worst-hosp std (0.0047) is tighter than topo (0.0098)
-at best-round; the difference there (0.6690 vs 0.6712) is within noise.
-
-## Next steps
-
-1. Bootstrap CIs on worst-hospital delta (n=5 too small for paired t-test).
-2. Add pooled arm to complete the comparison (one extra run, no code change needed).
-3. Add these numbers to `docs/2026-08-11-splits-and-results.md` §3 (canonical results record).
+1. Run the **uniform-weight (T=inf)** control on this split (§5).
+2. Move to a split with a real many-hospital structure — `organism_community` with 10 hospitals
+   (`notebooks/12_ten_hospitals.ipynb`, designed 2026-10-24; FedAvg, FedProx, FedMedian, FedTrimmedAvg, uniform control, Topo); Louvain cannot produce 10.
+3. Personalization (local fine-tune after the last round) — federation currently loses to local
+   on two of three hospitals.
+4. Bootstrap CIs on per-hospital deltas once more partitions exist.
