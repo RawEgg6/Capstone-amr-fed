@@ -21,7 +21,7 @@ leave a client.
 FedAvg baseline, topology fingerprint, topology-aware `Strategy` — Path-B gate PASS on 2 splits
 at n=3, fragile). Phase 6 (baseline comparisons) is active: the Louvain split was re-run with
 per-hospital output (nb11) and the earlier headline was corrected (see Results landscape); the
-10-hospital six-method comparison (nb12) is written and awaiting a Colab run. Phase 7 (dashboard)
+10-hospital six-method comparison (nb12) has run (`docs/2026-10-25-ten-hospital-results.md`), but its topo arm ran on a Mac CPU while the other arms ran on Colab, so the topo-vs-control gap needs a same-machine rerun. Phase 7 (dashboard)
 not started; Phase 8 (paper) is outline-only (`research_outline.md`).
 
 ## Locked decisions — do not silently change (source of truth: `src/amr_fed/config.py`)
@@ -143,7 +143,7 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 | 07 | topology_comparison | Phase-5 FedAvg-vs-topology arms, verdict, T×mode sweep (added 2026-10-18) |
 | 08 | antibiogram_comparison | pre-registered experiment #1 (done, null result); cells D1–D3 are SIGFPE forensics |
 | 11 | louvain_per_hospital | Louvain re-run, every per-hospital number (source of truth for the Louvain doc) |
-| 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (awaiting run) |
+| 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (run 2026-10-25; topo arm on Mac CPU, rest on Colab) |
 
 ## Docs index (append-only history; wrong claims are deleted, not left in place)
 
@@ -163,12 +163,13 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 
 **A. Active / blocked**
 1. Louvain re-run with per-hospital output (nb11) **done 2026-10-24** — see corrected results landscape.
-2. Next priority: (a) uniform-weight control (`topo_temperature=inf`) on Louvain; (b) 10-hospital
-   `organism_community` run with FedAvg / Topo / Uniform (`notebooks/12_ten_hospitals.ipynb`); (c) personalization.
+2. Next priority: (a) rerun nb12 topo and uniform arms on one machine; (b) confirm the 10-hospital topo weight
+   concentration (0.73 on one 3,322-patient hospital) is not a fingerprint artifact; (c) personalization.
+   Louvain is 3 hospitals (`n_clients=3`); nb11/nb13 previously passed `n_clients=5`, which gave the same 3 but misstated the setup.
 3. Keep `os.environ.pop("AMR_RNG_PROBE", None)` at the top of every arm cell (SIGFPE guard).
 
 **B. Next experiments (priority order)**
-1. Run nb12 (10 hospitals, six methods) and nb11 + a uniform-weight (`topo_temperature=inf`) control on Louvain.
+1. Same-machine rerun of nb12 topo + uniform; the Louvain uniform control is in nb13 (not yet run).
 2. Personalization (local fine-tune after the last round); round-decay control (server LR / best-val round).
 3. Ablations: fingerprint without history / without homophily-hubness / size-only weights.
 4. Bootstrap CIs on per-hospital deltas; timing/cost logging.
