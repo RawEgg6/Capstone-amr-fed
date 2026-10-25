@@ -1,8 +1,7 @@
 # Louvain topology arm — results (rewritten 2026-10-24)
 
-**Notebooks:** `09_louvain_topology` (first run, aggregates only), `10_baseline_comparison`
-(5-way, aggregates only), **`11_louvain_per_hospital`** (re-run with every per-hospital number —
-the source of truth for this doc). Raw: `/content/drive/MyDrive/amr_louvain_k5_full.json`.
+**Notebook:** **`11_louvain_per_hospital`** (every per-hospital number — the source of truth for this
+doc). Notebooks 09/10, which produced the earlier aggregate-only numbers, were removed 2026-10-24. Raw: `/content/drive/MyDrive/amr_louvain_k5_full.json`.
 
 > **Correction notice (2026-10-24).** An earlier version of this file called the setup "k=5",
 > described a "minority hospital", reported topology-aware final-round F1 as 0.6907, and claimed
@@ -92,10 +91,10 @@ returns results in arbitrary order), not by hospital id, so the logged per-clien
 rotate between rounds. Aggregation itself is consistent within a round; only the logging labels are
 unreliable.
 
-## 6. Baselines (notebook 10 — aggregates only, per-hospital data not saved)
+## 6. Baselines (from the removed notebook 10, commit `ccb3ae5` — aggregates only)
 
 Same protocol, seeds 42–46. FedAvg and Topo rows reproduced exactly in nb11; the other three were
-**not re-run** and are taken from the nb10 output.
+**not re-run** and come from the original nb10 output.
 
 | Method | Best-round F1 | Worst-hospital F1 | Final-round F1 |
 |---|---|---|---|

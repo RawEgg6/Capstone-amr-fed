@@ -49,12 +49,3 @@ worst 0.6957 ± 0.0013 — not identical to the FedAvg arm in the comparison tab
 (0.7111 ± 0.0056 / 0.6915 ± 0.0111). Both claim 3 seeds (42/43/44). Determine which
 protocol/round of the run each reflects (pre- vs post-seeding-fix, or different
 `compute_pooled`/arm settings) **before citing either number**.
-
-## Next experiments (priority order)
-
-1. Seeds 42–46 + paired per-seed tests / bootstrap CIs on the worst-hospital delta.
-2. Temperature × mode sweep (distinctiveness T∈{1,2,5,∞} × consensus) — cells added to
-   notebook 07 on 2026-10-18.
-3. FedProx / FedGTA-style baselines under the identical protocol.
-4. Ablations: fingerprint without history; without homophily/hubness; size-only weights.
-5. Final-round table alongside best-round (round-decay affects both arms).
