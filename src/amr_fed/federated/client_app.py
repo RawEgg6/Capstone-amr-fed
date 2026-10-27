@@ -27,7 +27,7 @@ from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context
 
 from .task import (
-    DEVICE, FIT_METRIC_KEY, get_weights, init_model_on, load_client_graph, local_eval,
+    DEVICE, FIT_METRIC_KEY, get_weights, init_model_on, load_client_graph, local_eval_full,
     local_train, read_run_config, seed_client, set_weights,
 )
 
@@ -191,9 +191,15 @@ class FlowerClient(NumPyClient):
 
     def evaluate(self, parameters, config):
         set_weights(self.model, parameters)
-        f1, auc, n = local_eval(self.model, self.data, "test_mask")
-        # cid -> per-hospital breakdown; auroc alongside macro_f1
-        return 0.0, n, {"macro_f1": f1, "auroc": auc, "cid": self.cid}
+        ev = local_eval_full(self.model, self.data)
+        # cid -> per-hospital breakdown; auroc alongside macro_f1. The val/test cutoff grids
+        # (JSON, 29 floats each) let the server pick the round/cutoff on VALIDATION only
+        # (see selection.py); macro_f1/auroc stay the legacy test @0.5 numbers.
+        return 0.0, ev["n_test"], {
+            "macro_f1": ev["macro_f1"], "auroc": ev["auroc"], "cid": self.cid,
+            "n_val": ev["n_val"], "val_grid": json.dumps(ev["val_grid"]),
+            "test_grid": json.dumps(ev["test_grid"]),
+        }
 
 
 _BISECT_DONE = False

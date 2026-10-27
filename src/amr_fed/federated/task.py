@@ -25,6 +25,7 @@ from ..data_loader import PK
 from ..graph_build import build_arrays, to_hetero_data
 from ..model import AMRSAGE
 from ..train_local import _auroc, _macro_f1
+from .selection import THRESHOLDS, macro_f1_grid
 
 # Canonical core edge types — exactly what to_hetero_data emits for the 3 core edges
 # (including reverse edges). Pinned so every client's model has identical submodules.
@@ -55,10 +56,16 @@ def reset_fed_history() -> None:
 
 
 def append_fed_metric(macro_f1: float, per_client: dict | None = None,
-                      auroc: float | None = None, per_client_auroc: dict | None = None) -> None:
+                      auroc: float | None = None, per_client_auroc: dict | None = None,
+                      extra: dict | None = None) -> None:
+    """`extra` carries the validation/test cutoff grids (selection.grid_record); the legacy
+    fields (test macro-F1 @0.5, AUROC) are unchanged so old readers keep working."""
+    rec = {"macro_f1": macro_f1, "per_client": per_client or {},
+           "auroc": auroc, "per_client_auroc": per_client_auroc or {}}
+    if extra:
+        rec.update(extra)
     with open(FED_HISTORY, "a") as f:
-        f.write(json.dumps({"macro_f1": macro_f1, "per_client": per_client or {},
-                            "auroc": auroc, "per_client_auroc": per_client_auroc or {}}) + "\n")
+        f.write(json.dumps(rec) + "\n")
 
 
 def read_fed_history() -> list[float]:
@@ -251,3 +258,66 @@ def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, float,
     result = _macro_f1(y[mask], logits), _auroc(y[mask], logits), int(mask.sum())
     free_gpu()
     return result
+
+
+@torch.no_grad()
+def local_eval_full(model, data) -> dict:
+    """Score the model on this hospital's VAL and TEST rows in one pass.
+
+    Returns n_test / n_val, the legacy test macro-F1 @0.5 and AUROC (identical to
+    `local_eval`), and the macro-F1 of both splits at every cutoff in selection.THRESHOLDS
+    (`val_grid` / `test_grid`). The cutoff/round are chosen from the val grid only."""
+    data = data.to(DEVICE)
+    tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+    tf = getattr(data, "triple_feat", None)
+    if tf is not None:
+        tf = tf.to(DEVICE)
+    model.eval()
+    out = {}
+    for name in ("val", "test"):
+        mask = getattr(data, f"{name}_mask").to(DEVICE)
+        n = int(mask.sum())
+        out[f"n_{name}"] = n
+        if n == 0:
+            out[f"{name}_grid"] = [float("nan")] * len(THRESHOLDS)
+            if name == "test":
+                out["macro_f1"], out["auroc"] = 0.0, float("nan")
+            continue
+        logits = model(data.x_dict, data.edge_index_dict, tri[:, mask],
+                       tf[mask] if tf is not None else None)
+        p = torch.sigmoid(logits).double().cpu().numpy()
+        out[f"{name}_grid"] = macro_f1_grid(y[mask].cpu().numpy(), p).tolist()
+        if name == "test":
+            out["macro_f1"], out["auroc"] = _macro_f1(y[mask], logits), _auroc(y[mask], logits)
+    free_gpu()
+    return out
+
+
+def local_train_tracked(model, data, epochs: int, eval_every: int, lr: float = 1e-3,
+                        weight_decay: float = 1e-4) -> list[dict]:
+    """`local_train` (same optimiser, same one-full-batch-step-per-epoch loop) that also scores
+    the model on val+test every `eval_every` epochs and at the last epoch. Evaluation runs in
+    eval() mode under no_grad, so it consumes no RNG and leaves training bit-identical to
+    `local_train`. Returns [{"epoch": e, **local_eval_full(...)}, ...]."""
+    data = data.to(DEVICE)
+    tr = data.train_mask.to(DEVICE)
+    tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+    tf = getattr(data, "triple_feat", None)
+    if tf is not None:
+        tf = tf.to(DEVICE)
+    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=data.train_pos_weight.to(DEVICE))
+    ckpts = sorted(set(range(eval_every, epochs + 1, eval_every)) | {epochs})
+    history = []
+    model.train()
+    for e in range(1, epochs + 1):
+        opt.zero_grad()
+        out = model(data.x_dict, data.edge_index_dict, tri[:, tr],
+                    tf[tr] if tf is not None else None)
+        loss_fn(out, y[tr]).backward()
+        opt.step()
+        if e in ckpts:
+            history.append({"epoch": e, **local_eval_full(model, data)})
+            model.train()
+    free_gpu()
+    return history

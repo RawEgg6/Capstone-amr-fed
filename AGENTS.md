@@ -80,8 +80,8 @@ export ARMD_DIR="/path/to/your/ARMD"   # persist in ~/.zshrc
 | Louvain per-hospital / 10-hospital six-method comparison | `notebooks/11`, `12` (Colab GPU) |
 | Raw committed run log | `res.txt` (572 lines, Colab output) |
 
-Tests: 6 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
-`test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
+Tests: 7 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
+`test_val_selection` (torch-free; round/cutoff selection), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
 (needs flwr). All green as of `d05b736` (federated pair green on Colab, skip locally).
 
 ## Architecture (data flow)
@@ -143,6 +143,7 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 | 07 | topology_comparison | Phase-5 FedAvg-vs-topology arms, verdict, T×mode sweep (added 2026-10-18) |
 | 08 | antibiogram_comparison | pre-registered experiment #1 (done, null result); cells D1–D3 are SIGFPE forensics |
 | 11 | louvain_per_hospital | Louvain re-run, every per-hospital number (source of truth for the Louvain doc) |
+| 14 | louvain_val_selection | Louvain, six arms, **validation-selected protocol** (round + cutoff chosen on val, test read once); Colab or local; writes `results/amr_louvain_val.json` |
 | 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (run 2026-10-25; topo arm on Mac CPU, rest on Colab) |
 
 ## Docs index (append-only history; wrong claims are deleted, not left in place)
@@ -183,6 +184,18 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 - Stale branches: `phase1-core-pipeline`, `phase3-federated`, `fix/spliting-tries`,
   `phase5-topology-aware`, `topology-aware-aggregation`.
 - Unpinned `requirements.txt`; deprecated `run_simulation` in flwr 1.41.
+
+## Evaluation protocol (federated runs)
+
+- **Old (legacy keys, kept for comparison):** `fedavg_best` = best round by *test* macro-F1 at a fixed
+  0.5 cutoff — optimistic; local-only (`local_only`) is final-epoch @0.5, no selection.
+- **Current (`val_*` keys, `federated/selection.py`):** each hospital scores the global model on its
+  val and test rows at 29 cutoffs (0.150–0.850) every round; the server picks the (round, cutoff)
+  with the best size-weighted **validation** macro-F1 and the test score is read once there.
+  Local-only is scored every `local_epochs` epochs with the same rule (per hospital). Reported keys:
+  `val_fed`, `val_fed_at05`, `val_fed_final`, `val_worst_fed`, `val_fed_auroc`, `val_local`, ...
+  Quote these, plus final-round and AUROC; do not quote `fedavg_best` alone.
+- Only per-hospital F1 values at the cutoff grid travel to the server (no logits, no patient data).
 
 ## Conventions & constraints
 
