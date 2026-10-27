@@ -85,6 +85,15 @@ def main() -> None:
     assert m4["topology_mode"] == "fedavg-fallback"
     assert abs(m4["topo_weight_client_0"] - 0.25) < 1e-9
 
+    # 7) invsize control: weights ~ 1/n_train, fingerprints ignored (even malformed ones)
+    strat_inv = S.TopologyAwareStrategy(mode="invsize")
+    r4 = [(None, fitres([np.array([1.0])], 1, {S.FIT_METRIC_KEY: "junk"})),
+          (None, fitres([np.array([3.0])], 3, {}))]
+    p5, m5 = strat_inv.aggregate_fit(5, r4, [])
+    assert m5["topology_mode"] == "invsize"
+    assert abs(m5["topo_weight_client_0"] - 0.75) < 1e-9 and abs(m5["topo_weight_client_1"] - 0.25) < 1e-9
+    assert np.allclose(parameters_to_ndarrays(p5)[0], [0.75 * 1 + 0.25 * 3])
+
     print("OK: topology strategy tests passed.")
 
 

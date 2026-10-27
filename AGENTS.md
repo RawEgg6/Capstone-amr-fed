@@ -144,6 +144,7 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 | 08 | antibiogram_comparison | pre-registered experiment #1 (done, null result); cells D1–D3 are SIGFPE forensics |
 | 11 | louvain_per_hospital | Louvain re-run, every per-hospital number (source of truth for the Louvain doc) |
 | 14 | louvain_val_selection | Louvain, six arms, **validation-selected protocol** (round + cutoff chosen on val, test read once); Colab or local; writes `results/amr_louvain_val.json` |
+| 15 | org10_val_controls | `organism_community` n=10, **validation-selected protocol**, 8 arms: the six from nb12 plus two topology controls — `topo_shuffled` (each hospital gets another's fingerprint) and `invsize` (weights ∝ 1/n_train); `RUN_ARMS`/`TAG` split work across accounts, cell 8 merges; writes `results/amr_org10_val_<TAG>.json` |
 | 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (run 2026-10-25; topo arm on Mac CPU, rest on Colab) |
 
 ## Docs index (append-only history; wrong claims are deleted, not left in place)

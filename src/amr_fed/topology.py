@@ -290,6 +290,22 @@ def aggregation_weights(fingerprints, temperature: float = 1.0,
     return _softmax(logits)
 
 
+def derangement(n: int, seed: int = 0) -> list[int]:
+    """Seeded permutation of range(n) with no fixed point (needs n >= 2).
+
+    Control for the topology arm: hospital c is handed hospital ``perm[c]``'s fingerprint, so
+    the aggregation weights have exactly the same spread as real topo but are attached to the
+    WRONG hospitals. If real topo does not beat this, the fingerprint carries no usable signal."""
+    if n < 2:
+        raise ValueError("derangement needs n >= 2")
+    rng = np.random.default_rng(seed)
+    ident = np.arange(n)
+    while True:
+        perm = rng.permutation(n)
+        if not (perm == ident).any():
+            return [int(i) for i in perm]
+
+
 # ----------------------------------------------------------------------------
 def _self_check() -> None:
     """Printable smoke demo: one tiny fingerprint + example weights."""

@@ -157,7 +157,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                seed: int = config.SEED, patient_history: bool = True, df=None,
                partition_fn=None, label: str | None = None, compute_pooled: bool = True,
                hidden: int = 128, strategy: str = "fedavg",
-               topo_temperature: float = 1.0, topo_mode: str = "distinctiveness"):
+               topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
+               topo_shuffle: bool = False):
     """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
     Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
     dispatched by keyword match on its signature (see partition._call_partition): n_clients
@@ -172,10 +173,15 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     Phase-6 federated baselines under the identical protocol (server_app.py picks the
     Flower strategy; FedProx additionally ships proximal_mu to clients — see
     task.local_train). Everything else — graphs, budgets, seeds, evaluation —
-    is identical, so the comparison is exactly apples-to-apples."""
+    is identical, so the comparison is exactly apples-to-apples.
+    Controls for the topology arm: topo_shuffle=True hands every hospital ANOTHER hospital's
+    fingerprint (seeded derangement) so the weights keep their spread but lose their meaning;
+    topo_mode="invsize" weights hospitals by 1/n_train and ignores fingerprints."""
     if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg"):
         raise ValueError(f"strategy must be one of 'fedavg', 'topology', 'fedprox', "
                          f"'fedmedian', 'fedtrimmedavg', got {strategy!r}")
+    if topo_shuffle and strategy != "topology":
+        raise ValueError("topo_shuffle=True only applies to strategy='topology'")
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
     from flwr.simulation import run_simulation
 
@@ -190,6 +196,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     tag = label or f"alpha={alpha}"
     cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden, seed=seed)
     cfg["strategy"] = strategy
+    shuffle_perm = None
     if strategy == "topology":
         # Phase 5: compute each hospital's fingerprint driver-side (the driver has the
         # frame + assignment; clients only see their saved graph) and hand it to the
@@ -202,6 +209,11 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
         for c in range(n_clients):
             sub = df[df[PK].map(assign) == c]
             fps[str(c)] = compute_fingerprint(sub).tolist()
+        if topo_shuffle:
+            from ..topology import derangement
+            shuffle_perm = derangement(n_clients, seed)
+            fps = {str(c): fps[str(shuffle_perm[c])] for c in range(n_clients)}
+            print(f"{tag} | SHUFFLED fingerprints: hospital c receives hospital perm[c]'s -> {shuffle_perm}")
         cfg["fingerprints"] = fps
         print(f"{tag} | strategy=topology (mode={topo_mode}, T={topo_temperature}) | "
               f"fingerprints computed for {n_clients} hospitals")
@@ -289,6 +301,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     return {"alpha": alpha, "strategy": strategy,
              "topo_temperature": float(topo_temperature) if strategy == "topology" else None,
              "topo_mode": topo_mode if strategy == "topology" else None,
+             "topo_shuffle_perm": shuffle_perm,
              "pooled": pl_avg, "pooled_worst": pl_worst,
             "pooled_per_client": pl_f1s, "fedavg_best": fed_best,
             "fedavg_final": fed_final, "local_only": lo_avg,
@@ -314,7 +327,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   df=None, partition_fn=None, label: str | None = None,
                   compute_pooled: bool = True, local_only_epochs: int | None = None,
                   hidden: int = 128, strategy: str = "fedavg",
-                  topo_temperature: float = 1.0, topo_mode: str = "distinctiveness"):
+                  topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
+                  topo_shuffle: bool = False):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
     pass label_dirichlet / specimen_baseline for the non-IID settings).
@@ -338,7 +352,7 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                compute_pooled=compute_pooled,
                                local_only_epochs=local_only_epochs, hidden=hidden,
                                strategy=strategy, topo_temperature=topo_temperature,
-                               topo_mode=topo_mode))
+                               topo_mode=topo_mode, topo_shuffle=topo_shuffle))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN

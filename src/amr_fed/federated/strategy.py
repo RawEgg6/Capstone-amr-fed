@@ -75,6 +75,8 @@ class TopologyAwareStrategy(FedAvg):
         mode: "consensus" (up-weight typical hospitals) or "distinctiveness"
             (up-weight the odd hospital out). Default "distinctiveness": our
             failure mode is the rare hospital that averaging erases.
+            "invsize" is a CONTROL, not a method: weights proportional to 1/n_train,
+            ignoring the fingerprint entirely.
         exclude / cv_floor: forwarded to ``topology.aggregation_weights``.
     """
 
@@ -95,6 +97,18 @@ class TopologyAwareStrategy(FedAvg):
         """Mix client weights by fingerprint similarity (fallback: size-proportional)."""
         if not results:
             return None, {}
+
+        if self.mode == "invsize":
+            # Control arm: weight each hospital by 1/n_train (small hospitals count more), with
+            # NO graph information. Tests whether topo is just "don't size-weight".
+            inv = 1.0 / np.maximum(np.array([float(r.num_examples) for _, r in results]), 1.0)
+            weights = inv / inv.sum()
+            ndarrays_list = [parameters_to_ndarrays(fit_res.parameters) for _, fit_res in results]
+            parameters = ndarrays_to_parameters(weighted_average(ndarrays_list, weights))
+            metrics: dict[str, Scalar] = {f"topo_weight_client_{i}": float(w)
+                                          for i, w in enumerate(weights)}
+            metrics["topology_mode"] = "invsize"
+            return parameters, metrics
 
         decoded = [decode_fingerprint(fit_res.metrics.get(FIT_METRIC_KEY))
                    for _, fit_res in results]
