@@ -66,6 +66,7 @@ If not, the gain comes from equal weighting, not from topology.
 - **Final round:** the score after the last round. The fairer number, because it doesn't cherry-pick.
 - **Worst hospital:** the lowest score among the hospitals. Shows whether the method leaves anyone behind.
 - **AUROC:** how well the model ranks resistant cases above susceptible ones. 0.5 is chance, 1.0 is perfect.
+  "AUROC (best)" is taken at the best-F1 round; "AUROC (final)" is after the last round.
 - **± number:** how much the score varies across the five seeds. Smaller means more consistent.
 
 A rule of thumb: differences smaller than about 0.01 are within the noise of five seeds.
@@ -76,16 +77,16 @@ A rule of thumb: differences smaller than about 0.01 are within the noise of fiv
 
 ### 5a. Summary
 
-| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC |
-|---|---|---|---|---|
-| Local only | 0.6882 ± 0.0150 | — | 0.6527 ± 0.0240 | 0.8435 ± 0.0021 |
-| Pooled | 0.6985 ± 0.0109 | — | 0.6653 ± 0.0184 | 0.8424 ± 0.0035 |
-| FedAvg | 0.7151 ± 0.0028 | 0.6744 ± 0.0287 | 0.6945 ± 0.0041 | 0.8389 ± 0.0053 |
-| FedProx | 0.7161 ± 0.0041 | 0.6931 ± 0.0176 | 0.6949 ± 0.0042 | 0.8386 ± 0.0052 |
-| FedMedian | 0.7184 ± 0.0042 | 0.7146 ± 0.0084 | 0.6961 ± 0.0063 | 0.8432 ± 0.0038 |
-| FedTrimmedAvg | 0.7189 ± 0.0039 | 0.7140 ± 0.0100 | 0.6966 ± 0.0055 | 0.8440 ± 0.0032 |
-| Uniform control | 0.7188 ± 0.0037 | 0.7122 ± 0.0125 | 0.6962 ± 0.0053 | 0.8444 ± 0.0029 |
-| **Topo (T=1)** | 0.7148 ± 0.0047 | 0.6985 ± 0.0236 | 0.6893 ± 0.0049 | 0.8403 ± 0.0061 |
+| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC (best) | AUROC (final) |
+|---|---|---|---|---|---|
+| Local only | 0.6882 ± 0.0150 | — | 0.6527 ± 0.0240 | 0.8435 ± 0.0021 | — |
+| Pooled | 0.6985 ± 0.0109 | — | 0.6653 ± 0.0184 | 0.8424 ± 0.0035 | — |
+| FedAvg | 0.7151 ± 0.0028 | 0.6744 ± 0.0287 | 0.6945 ± 0.0041 | 0.8389 ± 0.0053 | 0.8477 ± 0.0021 |
+| FedProx | 0.7161 ± 0.0041 | 0.6931 ± 0.0176 | 0.6949 ± 0.0042 | 0.8386 ± 0.0052 | 0.8469 ± 0.0025 |
+| FedMedian | 0.7184 ± 0.0042 | 0.7146 ± 0.0084 | 0.6961 ± 0.0063 | 0.8432 ± 0.0038 | 0.8451 ± 0.0024 |
+| FedTrimmedAvg | 0.7189 ± 0.0039 | 0.7140 ± 0.0100 | 0.6966 ± 0.0055 | 0.8440 ± 0.0032 | 0.8455 ± 0.0024 |
+| Uniform control | 0.7188 ± 0.0037 | 0.7122 ± 0.0125 | 0.6962 ± 0.0053 | 0.8444 ± 0.0029 | 0.8457 ± 0.0024 |
+| **Topo (T=1)** | 0.7148 ± 0.0047 | 0.6985 ± 0.0236 | 0.6893 ± 0.0049 | 0.8403 ± 0.0061 | 0.8449 ± 0.0030 |
 
 ### 5b. Per hospital (mean F1 over seeds, best round)
 
@@ -125,16 +126,16 @@ Hospitals ranked by size within each seed, so "largest" always means the same gr
 
 ### 6a. Summary
 
-| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC |
-|---|---|---|---|---|
-| Local only | 0.6838 ± 0.0167 | — | 0.6680 ± 0.0133 | 0.8308 ± 0.0038 |
-| Pooled | 0.6851 ± 0.0091 | — | 0.6406 ± 0.0096 | 0.8297 ± 0.0014 |
-| FedAvg | 0.6935 ± 0.0032 | 0.6671 ± 0.0151 | 0.6719 ± 0.0119 | 0.8195 ± 0.0040 |
-| FedProx | 0.6930 ± 0.0041 | 0.6681 ± 0.0175 | 0.6753 ± 0.0136 | 0.8176 ± 0.0083 |
-| FedMedian | 0.7020 ± 0.0037 | 0.6875 ± 0.0270 | 0.6783 ± 0.0147 | 0.8316 ± 0.0038 |
-| FedTrimmedAvg | 0.7010 ± 0.0069 | 0.6874 ± 0.0233 | 0.6791 ± 0.0130 | 0.8329 ± 0.0045 |
-| Uniform control | 0.7009 ± 0.0068 | 0.6877 ± 0.0229 | 0.6792 ± 0.0130 | 0.8329 ± 0.0045 |
-| **Topo (T=1)** | **0.7027 ± 0.0038** | **0.6990 ± 0.0093** | **0.6829 ± 0.0097** | 0.8336 ± 0.0031 |
+| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC (best) | AUROC (final) |
+|---|---|---|---|---|---|
+| Local only | 0.6838 ± 0.0167 | — | 0.6680 ± 0.0133 | 0.8308 ± 0.0038 | — |
+| Pooled | 0.6851 ± 0.0091 | — | 0.6406 ± 0.0096 | 0.8297 ± 0.0014 | — |
+| FedAvg | 0.6935 ± 0.0032 | 0.6671 ± 0.0151 | 0.6719 ± 0.0119 | 0.8195 ± 0.0040 | 0.8361 ± 0.0030 |
+| FedProx | 0.6930 ± 0.0041 | 0.6681 ± 0.0175 | 0.6753 ± 0.0136 | 0.8176 ± 0.0083 | 0.8358 ± 0.0029 |
+| FedMedian | 0.7020 ± 0.0037 | 0.6875 ± 0.0270 | 0.6783 ± 0.0147 | 0.8316 ± 0.0038 | 0.8353 ± 0.0029 |
+| FedTrimmedAvg | 0.7010 ± 0.0069 | 0.6874 ± 0.0233 | 0.6791 ± 0.0130 | 0.8329 ± 0.0045 | 0.8348 ± 0.0027 |
+| Uniform control | 0.7009 ± 0.0068 | 0.6877 ± 0.0229 | 0.6792 ± 0.0130 | 0.8329 ± 0.0045 | 0.8348 ± 0.0027 |
+| **Topo (T=1)** | **0.7027 ± 0.0038** | **0.6990 ± 0.0093** | **0.6829 ± 0.0097** | 0.8336 ± 0.0031 | 0.8345 ± 0.0028 |
 
 ### 6b. Per hospital (mean F1 over seeds, best round)
 
@@ -163,6 +164,11 @@ why topo and the uniform control perform almost the same here.
 - Final round: topo beats FedAvg on both splits (+0.032 on Louvain, +0.024 on the organism split).
   FedAvg's score drops during training, and topo's doesn't.
 - Worst hospital on the organism split: topo is slightly worse than FedAvg (0.6893 against 0.6945).
+- Against local-only at the final round, FedAvg is below on both splits (−0.017 Louvain, −0.014 organism).
+  AUROC (final) is +0.001 to +0.005 above local-only for every federated method, so the gain in
+  ranking quality is small and the F1 differences between methods are mostly threshold effects.
+- Louvain: topo vs the uniform control is +0.0018 (paired, 95% CI −0.003 to +0.0065, p = 0.34), and
+  FedTrimmedAvg equals the uniform control there (with 3 hospitals it trims nobody).
 
 **Topology does not beat the robust methods.**
 - FedMedian and FedTrimmedAvg match or beat topo on almost every measure on both splits.
@@ -186,8 +192,7 @@ why topo and the uniform control perform almost the same here.
 - **Topo ran on a different machine.** The topo arm of the organism split ran on a Mac (CPU) and the
   other arms ran on Colab. The gap to the uniform control should be rerun on one machine before we
   treat it as a result.
-- **FedAvg on Louvain is not yet reconciled.** An older doc reported 0.6785; this run gives 0.6935. Local-only
-  matches the older doc, so the difference is specific to FedAvg, and we haven't found the cause.
+- **This run supersedes the older Louvain doc** (which reported FedAvg 0.6785); use 0.6935.
 
 ---
 

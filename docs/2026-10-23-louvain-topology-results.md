@@ -6,8 +6,9 @@ index-matched Louvain results from notebooks 09–11, which mixed hospitals acro
 
 ## 1. The split
 
-`louvain_split(n_clients=5, seed)` returns **3 hospitals for every seed**, whatever `n_clients` is
-set to. The partition changes with the seed:
+`louvain_split(seed)` returns **3 hospitals for every seed**, whatever `n_clients` is set to
+(notebook 13 calls it with `n_clients=3`; the grouping is the same for any larger value). The earlier
+Oct-23 note that Louvain gives "~5 communities" was wrong: it finds 3 (about 73% / 21% / 5% of patients). The partition changes with the seed:
 
 | Seed | Hospital sizes (patients, largest first) |
 |---|---|
@@ -35,19 +36,19 @@ in the other seeds, so rank matching is an approximation, not an exact match.
 
 ## 4. Summary (mean ± std over seeds)
 
-| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC (best) |
-|---|---|---|---|---|
-| Local only | 0.6838 ± 0.0167 | — | 0.6680 ± 0.0133 | 0.8308 ± 0.0038 |
-| Pooled | 0.6851 ± 0.0091 | — | 0.6406 ± 0.0096 | 0.8297 ± 0.0014 |
-| FedAvg | 0.6935 ± 0.0032 | 0.6671 ± 0.0151 | 0.6719 ± 0.0119 | 0.8195 ± 0.0040 |
-| FedProx | 0.6930 ± 0.0041 | 0.6681 ± 0.0175 | 0.6753 ± 0.0136 | 0.8176 ± 0.0083 |
-| FedMedian | 0.7020 ± 0.0037 | 0.6875 ± 0.0270 | 0.6783 ± 0.0147 | 0.8316 ± 0.0038 |
-| FedTrimmedAvg | 0.7010 ± 0.0069 | 0.6874 ± 0.0233 | 0.6791 ± 0.0130 | 0.8329 ± 0.0045 |
-| Uniform control | 0.7009 ± 0.0068 | 0.6877 ± 0.0229 | 0.6792 ± 0.0130 | 0.8329 ± 0.0045 |
-| **Topo (T=1)** | **0.7027 ± 0.0038** | **0.6990 ± 0.0093** | **0.6829 ± 0.0097** | 0.8336 ± 0.0031 |
+| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC (best) | AUROC (final) |
+|---|---|---|---|---|---|
+| Local only | 0.6838 ± 0.0167 | — | 0.6680 ± 0.0133 | 0.8308 ± 0.0038 | — |
+| Pooled | 0.6851 ± 0.0091 | — | 0.6406 ± 0.0096 | 0.8297 ± 0.0014 | — |
+| FedAvg | 0.6935 ± 0.0032 | 0.6671 ± 0.0151 | 0.6719 ± 0.0119 | 0.8195 ± 0.0040 | 0.8361 ± 0.0030 |
+| FedProx | 0.6930 ± 0.0041 | 0.6681 ± 0.0175 | 0.6753 ± 0.0136 | 0.8176 ± 0.0083 | 0.8358 ± 0.0029 |
+| FedMedian | 0.7020 ± 0.0037 | 0.6875 ± 0.0270 | 0.6783 ± 0.0147 | 0.8316 ± 0.0038 | 0.8353 ± 0.0029 |
+| FedTrimmedAvg | 0.7010 ± 0.0069 | 0.6874 ± 0.0233 | 0.6791 ± 0.0130 | 0.8329 ± 0.0045 | 0.8348 ± 0.0027 |
+| Uniform control | 0.7009 ± 0.0068 | 0.6877 ± 0.0229 | 0.6792 ± 0.0130 | 0.8329 ± 0.0045 | 0.8348 ± 0.0027 |
+| **Topo (T=1)** | **0.7027 ± 0.0038** | **0.6990 ± 0.0093** | **0.6829 ± 0.0097** | 0.8336 ± 0.0031 | 0.8345 ± 0.0028 |
 
 Definitions: best-round = highest F1 over rounds (optimistic, since it picks the peak on test data);
-final-round = after round 8; worst-hospital = lowest per-hospital F1 in each seed, averaged over seeds.
+final-round = after round 8; AUROC (best) = AUROC at the best-F1 round, AUROC (final) = after round 8; worst-hospital = lowest per-hospital F1 in each seed, averaged over seeds.
 
 ## 5. Topology weights (recomputed from fingerprints, T = 1)
 
@@ -73,6 +74,21 @@ and the uniform control perform almost the same.
   smallest gains are clear. The middle gain is +0.001, which is noise.
 - **Federation vs local-only, by rank:** FedAvg beats local on the largest hospital only. Middle
   and smallest get worse (−0.010 and −0.003).
+- **Topo vs uniform, paired by seed (best round):** differences are +0.0003, +0.0084, −0.0002, −0.0010,
+  +0.0016 (mean +0.0018, 95% CI −0.003 to +0.0065, p = 0.34). Seed 43 alone supplies most of the mean;
+  the median is +0.0003 and the mean without seed 43 is +0.0002. With five seeds the smallest difference
+  we could reliably detect is about 0.005, so "no difference" is the safe reading and a gain of up to
+  +0.006 is not excluded.
+- **FedTrimmedAvg is the uniform control on this split.** With 3 hospitals and β = 0.1 it trims
+  `int(0.3) = 0` clients, so it is an unweighted mean. Per-seed best-round scores differ by at most
+  0.0002. The two rows are one result, not independent evidence that robust methods work.
+- **Fixed-round view (no round selection).** At round 8, FedAvg is 0.017 *below* local-only (0.6671 vs
+  0.6838) and FedProx 0.016 below; FedMedian, FedTrimmedAvg and uniform are about +0.004 above, and
+  topo is +0.015 above. The best-round gains over local-only are partly selection on the test set.
+- **AUROC (final) is flat across federated methods (0.8345–0.8361) and slightly above local-only
+  (0.8308).** FedAvg's lower AUROC (best) of 0.8195 comes from its best-F1 round being round 3, not
+  from worse ranking at the end. Federation adds roughly +0.004 AUROC over local-only; the F1 spread
+  between methods is mostly a threshold effect at 0.5.
 - **Robust methods are as good as topo.** FedMedian and FedTrimmedAvg match topo on best-round and
   worst-hospital F1 within noise.
 - **Pooled is not a ceiling here.** Its average (0.6851) is barely above local (0.6838), and it is
@@ -90,9 +106,8 @@ and the uniform control perform almost the same.
   is not the same patients as the smallest in the other seeds.
 - **Best-round is optimistic.** The final-round columns are the fairer comparison.
 - **Five seeds over three partitions.** Differences under about 0.01 are not reliable here.
-- **FedAvg differs from the old doc.** The old Louvain doc reported FedAvg best-round 0.6785. This
-  run gives 0.6935. The local-only numbers agree with the old doc, but I haven't found the cause of the
-  FedAvg difference. It may be the metric definition or a change in the code.
+- **This run supersedes the old Louvain doc.** The earlier notebooks 09–11 reported FedAvg best-round
+  0.6785; the numbers in this document (0.6935) are the ones to use.
 
 ## 8. Next steps
 

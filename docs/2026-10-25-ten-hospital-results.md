@@ -18,19 +18,19 @@ Colab JSON). Raw results: `results/amr_org10_full.json` (local; not in git).
 
 ## 2. Summary (mean ± std over 5 seeds)
 
-| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC (best) |
-|---|---|---|---|---|
-| Local only | 0.6882 ± 0.0150 | — | 0.6527 ± 0.0240 | 0.8435 ± 0.0021 |
-| Pooled | 0.6985 ± 0.0109 | — | 0.6653 ± 0.0184 | 0.8424 ± 0.0035 |
-| FedAvg | 0.7151 ± 0.0028 | 0.6744 ± 0.0287 | 0.6945 ± 0.0041 | 0.8389 ± 0.0053 |
-| FedProx | 0.7161 ± 0.0041 | 0.6931 ± 0.0176 | 0.6949 ± 0.0042 | 0.8386 ± 0.0052 |
-| FedMedian | 0.7184 ± 0.0042 | 0.7146 ± 0.0084 | 0.6961 ± 0.0063 | 0.8432 ± 0.0038 |
-| FedTrimmedAvg | 0.7189 ± 0.0039 | 0.7140 ± 0.0100 | 0.6966 ± 0.0055 | 0.8440 ± 0.0032 |
-| Uniform control | 0.7188 ± 0.0037 | 0.7122 ± 0.0125 | 0.6962 ± 0.0053 | 0.8444 ± 0.0029 |
-| **Topo (T=1)** | 0.7148 ± 0.0047 | 0.6985 ± 0.0236 | 0.6893 ± 0.0049 | 0.8403 ± 0.0061 |
+| Method | Best-round F1 | Final-round F1 | Worst-hospital F1 | AUROC (best) | AUROC (final) |
+|---|---|---|---|---|---|
+| Local only | 0.6882 ± 0.0150 | — | 0.6527 ± 0.0240 | 0.8435 ± 0.0021 | — |
+| Pooled | 0.6985 ± 0.0109 | — | 0.6653 ± 0.0184 | 0.8424 ± 0.0035 | — |
+| FedAvg | 0.7151 ± 0.0028 | 0.6744 ± 0.0287 | 0.6945 ± 0.0041 | 0.8389 ± 0.0053 | 0.8477 ± 0.0021 |
+| FedProx | 0.7161 ± 0.0041 | 0.6931 ± 0.0176 | 0.6949 ± 0.0042 | 0.8386 ± 0.0052 | 0.8469 ± 0.0025 |
+| FedMedian | 0.7184 ± 0.0042 | 0.7146 ± 0.0084 | 0.6961 ± 0.0063 | 0.8432 ± 0.0038 | 0.8451 ± 0.0024 |
+| FedTrimmedAvg | 0.7189 ± 0.0039 | 0.7140 ± 0.0100 | 0.6966 ± 0.0055 | 0.8440 ± 0.0032 | 0.8455 ± 0.0024 |
+| Uniform control | 0.7188 ± 0.0037 | 0.7122 ± 0.0125 | 0.6962 ± 0.0053 | 0.8444 ± 0.0029 | 0.8457 ± 0.0024 |
+| **Topo (T=1)** | 0.7148 ± 0.0047 | 0.6985 ± 0.0236 | 0.6893 ± 0.0049 | 0.8403 ± 0.0061 | 0.8449 ± 0.0030 |
 
 Definitions: best-round = highest F1 over rounds (optimistic, since it selects on test data);
-final-round = after round 8; worst-hospital = lowest per-hospital F1, per seed, then averaged.
+final-round = after round 8; AUROC (best) = AUROC at the best-F1 round, AUROC (final) = after round 8; worst-hospital = lowest per-hospital F1, per seed, then averaged.
 
 ## 3. Per-hospital F1 (mean over seeds, best round; hospital index = client id)
 
@@ -73,6 +73,10 @@ These weights are fixed for the whole run because the fingerprints come from the
   Topo is also below the uniform control on 6 of 10 hospitals (H0, H2, H3, H5, H7, H9).
 - **Topo's best-round score (0.7148) is about 0.004 below the uniform control (0.7188).** The
   difference is about one standard deviation, so it is within noise.
+- **Fixed-round view (no round selection).** At round 8, FedAvg is 0.014 below local-only (0.6744 vs
+  0.6882); FedProx is +0.005, FedMedian/FedTrimmedAvg/uniform are +0.024 to +0.026, and topo is +0.010.
+  AUROC (final) is 0.8449–0.8477 for every federated method, slightly above local-only (0.8435), so
+  federation adds about +0.001 to +0.004 AUROC; the F1 gaps between methods are mostly threshold effects.
 - **The robust methods are the strongest group.** FedMedian, FedTrimmedAvg and the uniform control
   are close together on best-round, final-round, and worst-hospital F1.
 - **Final-round stability favors the robust methods.** FedAvg loses 0.04 from best to final round
