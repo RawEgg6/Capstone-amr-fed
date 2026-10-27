@@ -17,13 +17,12 @@ and a central server aggregates models by **weighting each client on graph topol
 uniform FedAvg). Privacy-preserving: only model weights + a small topology fingerprint ever
 leave a client.
 
-**Status snapshot (2026-10-23):** Phases 0–5 are done and evaluated (local model, partitions,
+**Status snapshot (2026-10-24):** Phases 0–5 are done and evaluated (local model, partitions,
 FedAvg baseline, topology fingerprint, topology-aware `Strategy` — Path-B gate PASS on 2 splits
-at n=3, fragile). Phase 6 (baseline comparisons + the pre-registered antibiogram-conflict
-experiment) is active: a Colab-only CUDA crash (SIGFPE in Flower client actors) blocked the
-antibiogram arms; the fix is pushed as `d05b736` and awaiting a confirming Colab run (see
-"Active work" below). Phase 7 (dashboard) not started; Phase 8 (paper) is outline-only
-(`research_outline.md`).
+at n=3, fragile). Phase 6 (baseline comparisons) is active: the Louvain split was re-run with
+per-hospital output (nb11) and the earlier headline was corrected (see Results landscape); the
+10-hospital six-method comparison (nb12) has run (`docs/2026-10-25-ten-hospital-results.md`), but its topo arm ran on a Mac CPU while the other arms ran on Colab, so the topo-vs-control gap needs a same-machine rerun. Phase 7 (dashboard)
+not started; Phase 8 (paper) is outline-only (`research_outline.md`).
 
 ## Locked decisions — do not silently change (source of truth: `src/amr_fed/config.py`)
 
@@ -78,10 +77,11 @@ export ARMD_DIR="/path/to/your/ARMD"   # persist in ~/.zshrc
 | Local training (Phase 1) | `notebooks/03_train_local.ipynb` (Colab GPU) |
 | FedAvg / split experiments | `notebooks/04_federated.ipynb` (Colab GPU) |
 | Fingerprints / Phase-5 comparison / pre-registered experiment | `notebooks/06`, `07`, `08` (Colab GPU) |
+| Louvain per-hospital / 10-hospital six-method comparison | `notebooks/11`, `12` (Colab GPU) |
 | Raw committed run log | `res.txt` (572 lines, Colab output) |
 
-Tests: 6 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
-`test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
+Tests: 7 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
+`test_val_selection` (torch-free; round/cutoff selection), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
 (needs flwr). All green as of `d05b736` (federated pair green on Colab, skip locally).
 
 ## Architecture (data flow)
@@ -122,6 +122,8 @@ its vector in fit metrics → `TopologyAwareStrategy.aggregate_fit` converts sim
 | Hard topology splits | headroom gate **FAIL in the informative direction**: on topology-divergent splits FedAvg *beats* pooled (size-weighted pooled loss starves rare communities; Louvain 5% community: local 0.7423 → pooled 0.6735 → FedAvg 0.7308) | `docs/2026-08-11-splits-and-results.md` §3, §7 |
 | Phase 5 (novelty) | Path-B gate PASS: worst-hospital +0.0054 (organism-community) / +0.0050 (specimen); mean deltas noise-level; determinism fixed (`0af90d0`); fragile at n=3 (std ≫ effect) | `docs/2026-10-18-topology-phase5-results.md`, nb 07 |
 | Experiment #1 (done) | antibiogram-conflict split, 5 seeds: **C1 FAIL, C2 FAIL, C3 marginal PASS** — condition not reproduced (FedAvg *helps* minority +0.028); topo tail +0.0045 within noise | `docs/2026-10-18-antibiogram-conflict-split.md` §8 |
+| Louvain topology arm (done, corrected 2026-10-24) | `louvain_split(5)` actually yields **3 hospitals** (~73/21/5%). Topo-aware beats FedAvg on weighted best-round F1 (0.6987 vs 0.6785, std 0.006 vs 0.023) and beats its own local model on the largest hospital in 5/5 seeds (+0.024); on the middle/smallest hospitals both FedAvg and topo are *worse than local-only* (topo less so). Topo weights are near-uniform (~1/3 each) → **uniform-weight control (T=inf) not yet run**. C1/C2/C3 and "minority hospital" framing retired | `docs/2026-10-23-louvain-topology-results.md` |
+| 5-way baseline comparison (nb10, aggregates only) | FedMedian / FedTrimmedAvg / Topo are indistinguishable on best-round (≈0.698) and worst-hospital (≈0.67); final-round Topo 0.6786 ≈ FedTrimmedAvg 0.6777 > FedMedian 0.6542 > FedProx 0.6490 > FedAvg 0.6457. Topo does **not** clearly beat the robust baselines; earlier "wins all three metrics / final 0.6907" claim withdrawn | `docs/2026-10-23-louvain-topology-results.md` §6 |
 
 **Do-not-claim list** (binding, from `research_outline.md` §J): no statistical-significance
 claims (n=3), no SOTA/generality, no "mean improves" (mean deltas are noise), no best-round-only
@@ -139,50 +141,61 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 | 05 | demo_modules | guided walkthrough of every module (demo for panel) |
 | 06 | topology_fingerprints | fingerprint + similarity-matrix inspection (saves JSON to Drive) |
 | 07 | topology_comparison | Phase-5 FedAvg-vs-topology arms, verdict, T×mode sweep (added 2026-10-18) |
-| 08 | antibiogram_comparison | **active** — pre-registered experiment #1: smoke gate, SIGFPE forensics D1–D3, arms 6/7, verdict 8 |
+| 08 | antibiogram_comparison | pre-registered experiment #1 (done, null result); cells D1–D3 are SIGFPE forensics |
+| 11 | louvain_per_hospital | Louvain re-run, every per-hospital number (source of truth for the Louvain doc) |
+| 14 | louvain_val_selection | Louvain, six arms, **validation-selected protocol** (round + cutoff chosen on val, test read once); Colab or local; writes `results/amr_louvain_val.json` |
+| 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (run 2026-10-25; topo arm on Mac CPU, rest on Colab) |
 
-## Docs index (7 files — consolidated 2026-10-23; append-only history, never rewrite/rewrite-delete)
+## Docs index (append-only history; wrong claims are deleted, not left in place)
 
-- **Active / forward-looking:** `docs/2026-10-18-antibiogram-conflict-split.md` (pre-registration;
-  results section empty), `docs/2026-10-18-topology-phase5-results.md` (latest results + a
-  res.txt reconciliation TODO), `docs/2026-09-28-topology-module-research.md` (Phase-5 design),
-  `research_outline.md` (paper outline; §G open questions, §J claim guardrails).
-- **Design record:** `docs/2026-07-19-eda-decision-brief.md` (locked decisions + rationale).
-- **Results history:** `docs/2026-08-05-phase1-results.md` (local model),
-  `docs/2026-08-06-federation-results.md` (FedAvg baseline + feature/split analysis),
-  `docs/2026-08-11-splits-and-results.md` (**canonical consolidated record** — all splits,
-  headroom gate, hard-split design/calibration as §7).
+- **Active results:** `docs/2026-10-23-louvain-topology-results.md` (rewritten 2026-10-24 from nb11),
+  `docs/2026-10-18-topology-phase5-results.md`, `docs/2026-10-18-antibiogram-conflict-split.md`
+  (pre-registration + null result), `research_outline.md` (paper outline; §G open questions, §J claim guardrails).
+- **Design record:** `docs/2026-07-19-eda-decision-brief.md` (locked decisions + rationale),
+  `docs/2026-09-28-topology-module-research.md` (Phase-5 design).
+- **Results history:** `docs/2026-08-05-phase1-results.md`, `docs/2026-08-06-federation-results.md`,
+  `docs/2026-08-11-splits-and-results.md` (**canonical consolidated record** of all splits and the headroom gate).
 - **Reference:** `Dataset.md` (ARMD data card), `README.md` (setup), `res.txt` (raw log).
-- *2026-10-23 consolidation (user-approved): removed `2026-07-19-next-steps.md` (obsolete
-  build plan), `2026-08-09-hard-topology-splits{,-design}.md` + `2026-08-09-headroom-calibration.md`
-  (unique content merged into splits-and-results §7), `2026-08-11-handoff.md` (pure duplicate
-  artifact prompt). Do not re-create them.*
+- *Removed 2026-10-24 (recoverable from git history): notebooks 09/10 (superseded by nb11/12; carried
+  the incorrect "k=5" framing), `prompts/baseline-comparison-handoff.md` (stale handoff). Earlier
+  removals: `2026-07-19-next-steps.md`, the three `2026-08-09-*` docs, `2026-08-11-handoff.md`. Do not re-create them.*
 
 ## Active work & TODOs
 
 **A. Active / blocked**
-1. Experiment #1 (antibiogram-conflict) **complete** — C1/C2 FAIL, C3 marginal PASS. Results
-   filled in `docs/2026-10-18-antibiogram-conflict-split.md` §8 (2026-10-23). Do NOT re-tune.
-2. SIGFPE forensics resolved: `AMR_RNG_PROBE` must be unset before arm cells (D3 diagnostic
-   only). Fix: `os.environ.pop("AMR_RNG_PROBE", None)` at top of arm cells.
+1. Louvain re-run with per-hospital output (nb11) **done 2026-10-24** — see corrected results landscape.
+2. Next priority: (a) rerun nb12 topo and uniform arms on one machine; (b) confirm the 10-hospital topo weight
+   concentration (0.73 on one 3,322-patient hospital) is not a fingerprint artifact; (c) personalization.
+   Louvain is 3 hospitals (`n_clients=3`); nb11/nb13 previously passed `n_clients=5`, which gave the same 3 but misstated the setup.
+3. Keep `os.environ.pop("AMR_RNG_PROBE", None)` at the top of every arm cell (SIGFPE guard).
 
-**B. Next experiments (priority order, per docs)**
-1. Seeds 42–46 (5) + paired per-seed tests/bootstrap CIs on the worst-hospital delta.
-2. Temperature × mode sweep (cells already added to notebook 07, 2026-10-18).
-3. FedProx / FedGTA-style baselines under the identical protocol.
-4. Ablations: fingerprint without history / without homophily-hubness / size-only weights.
-5. Final-round (not just best-round) comparison tables; timing/cost logging.
+**B. Next experiments (priority order)**
+1. Same-machine rerun of nb12 topo + uniform; the Louvain uniform control is in nb13 (not yet run).
+2. Personalization (local fine-tune after the last round); round-decay control (server LR / best-val round).
+3. Ablations: fingerprint without history / without homophily-hubness / size-only weights.
+4. Bootstrap CIs on per-hospital deltas; timing/cost logging.
 
 **C. Paper (`research_outline.md`)**
 - §G open questions (venue, author order, compute budget, code/data release, title choice).
 - Verify every §I citation before use; pin exact software versions for the reproducibility section.
 
 **D. Housekeeping (team decisions, not unilateral)**
-- 2 untracked files: `AGENTS.md`, `docs/2026-08-11-splits-and-results.md`.
 - Reconcile `res.txt` specimen FedAvg numbers vs notebook-07 comparison table (documented mismatch).
 - Stale branches: `phase1-core-pipeline`, `phase3-federated`, `fix/spliting-tries`,
   `phase5-topology-aware`, `topology-aware-aggregation`.
 - Unpinned `requirements.txt`; deprecated `run_simulation` in flwr 1.41.
+
+## Evaluation protocol (federated runs)
+
+- **Old (legacy keys, kept for comparison):** `fedavg_best` = best round by *test* macro-F1 at a fixed
+  0.5 cutoff — optimistic; local-only (`local_only`) is final-epoch @0.5, no selection.
+- **Current (`val_*` keys, `federated/selection.py`):** each hospital scores the global model on its
+  val and test rows at 29 cutoffs (0.150–0.850) every round; the server picks the (round, cutoff)
+  with the best size-weighted **validation** macro-F1 and the test score is read once there.
+  Local-only is scored every `local_epochs` epochs with the same rule (per hospital). Reported keys:
+  `val_fed`, `val_fed_at05`, `val_fed_final`, `val_worst_fed`, `val_fed_auroc`, `val_local`, ...
+  Quote these, plus final-round and AUROC; do not quote `fedavg_best` alone.
+- Only per-hospital F1 values at the cutoff grid travel to the server (no logits, no patient data).
 
 ## Conventions & constraints
 

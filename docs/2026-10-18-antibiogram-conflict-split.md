@@ -219,33 +219,20 @@ Local-only tail mean: 0.7527.
 ### Interpretation (honest, per falsification rules)
 
 **C1 failed → the condition was not reproduced.** The antibiogram-conflict split did not
-create a FedAvg failure mode: the worst hospital's macro-F1 *improved* from 0.603 (local-only)
-to 0.631 (FedAvg), a +0.028 gain. Size-weighted averaging appears to *transfer* useful signal
-from the large susceptible-majority hospitals to the resistant-minority tail, rather than
-dominating it out.
-
-Possible reasons the condition did not reproduce:
-1. The ARMD feature set (resistance ratios, history, demographics) gives each hospital a
-   self-consistent representation; the globally shared feature structure may swamp any
-   label-level antibiogram conflict in the weight signal.
-2. With only 5 clients and 8 rounds the averaging is coarse; more granular concept shift
-   may require more clients or more heterogeneous feature sets.
-3. The predicted "small resistant tail is dominated" mechanism relies on the tail's gradient
-   pointing away from the majority's. In a GNN trained on triples, the minority tail's
-   *graph structure* (not just label rates) may prevent direct gradient collision.
+create a FedAvg failure mode on the worst-hospital metric: it rose from 0.603 (local-only) to
+0.631 (FedAvg), +0.028. Per-hospital numbers were not saved for this run, so the cause (and
+whether the "tail" = highest client id is actually the minority hospital) is not established.
 
 **C2 failed** as a consequence — because C1 failed, there is no problem for topology-aware
 aggregation to fix. The Δ values (mean +0.0003, worst −0.0039) are noise-level at n=5.
 
 **C3 passed marginally** (topo tail mean 0.7464 vs FedAvg 0.7419, +0.0045). The direction
 is consistent across 3 of 5 seeds but the effect is below noise (std across seeds ~0.02).
-This is not a strong result; it replicates the Phase-5 pattern of a small positive Δ on
-the tail hospital.
+This is not a strong result.
 
 **What this means for the paper:** Experiment #1 is an honest null on the target failure
-condition. Report as a negative result: the antibiogram-conflict mechanism does not reproduce
-in ARMD at this scale. The Phase-5 positive result (organism-community / specimen splits)
-stands on its own evidence. Do not merge or re-frame these findings.
+condition. Report as a negative result: the antibiogram-conflict condition does not reproduce
+in ARMD at this scale. Do not merge or re-frame these findings.
 
 Do not re-tune the split or protocol to force C1 PASS — any iteration must be appended
 below this section with date, rationale, and both runs reported side-by-side.

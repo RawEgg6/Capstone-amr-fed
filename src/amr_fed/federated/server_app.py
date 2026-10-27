@@ -14,6 +14,7 @@ from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
 
+from .selection import grid_record
 from .strategy import TopologyAwareStrategy
 from .task import (
     append_fed_metric, get_weights, init_model_on, load_client_graph, read_run_config,
@@ -34,7 +35,8 @@ def _weighted_metrics(metrics: list) -> dict:
     per_client = {str(m.get("cid", i)): round(m["macro_f1"], 4) for i, (_, m) in enumerate(metrics)}
     per_client_auroc = {str(m.get("cid", i)): (round(m["auroc"], 4) if m.get("auroc") == m.get("auroc") else None)
                         for i, (_, m) in enumerate(metrics)}
-    append_fed_metric(f1, per_client, auroc=auc, per_client_auroc=per_client_auroc)
+    extra = grid_record(metrics) if all("val_grid" in m for _, m in metrics) else None
+    append_fed_metric(f1, per_client, auroc=auc, per_client_auroc=per_client_auroc, extra=extra)
     return {"macro_f1": f1, "auroc": auc}
 
 
@@ -63,14 +65,35 @@ def server_fn(context: Context):
         evaluate_metrics_aggregation_fn=_weighted_metrics,
     )
     # Phase 5: "topology" swaps plain FedAvg for fingerprint-similarity mixing.
-    # Everything else (sampling, evaluation, initial weights) is identical, so the
-    # comparison is exactly apples-to-apples. Default stays plain FedAvg.
-    if cfg.get("strategy", "fedavg") == "topology":
+    # Phase 6 baselines (2026-10-23): "fedmedian" / "fedtrimmedavg" swap the
+    # aggregation rule for Flower's robust aggregators; "fedprox" keeps a FedAvg
+    # server but ships proximal_mu to every client's fit config (the proximal term
+    # itself lives in task.local_train). Everything else (sampling, evaluation,
+    # initial weights) is identical, so the comparison is exactly apples-to-apples.
+    # Default stays plain FedAvg.
+    strategy_name = cfg.get("strategy", "fedavg")
+    if strategy_name == "topology":
         strategy = TopologyAwareStrategy(
             temperature=float(cfg.get("topo_temperature", 1.0)),
             mode=cfg.get("topo_mode", "distinctiveness"),
             **common,
         )
+    elif strategy_name == "fedmedian":
+        from flwr.server.strategy import FedMedian
+        strategy = FedMedian(**common)
+    elif strategy_name == "fedtrimmedavg":
+        from flwr.server.strategy import FedTrimmedAvg
+        strategy = FedTrimmedAvg(beta=float(cfg.get("trimmed_beta", 0.1)), **common)
+    elif strategy_name == "fedprox":
+        # Flower's FedProx injects proximal_mu into the fit config itself; fall back
+        # to FedAvg + an on_fit_config_fn that does the same if it's unavailable.
+        mu = float(cfg.get("proximal_mu", 0.01))
+        try:
+            from flwr.server.strategy import FedProx
+            strategy = FedProx(proximal_mu=mu, **common)
+        except ImportError:
+            common["on_fit_config_fn"] = lambda rnd: {"proximal_mu": mu, "round": rnd}
+            strategy = FedAvg(**common)
     else:
         strategy = FedAvg(**common)
     return ServerAppComponents(strategy=strategy, config=ServerConfig(num_rounds=cfg["rounds"]))

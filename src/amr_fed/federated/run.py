@@ -17,10 +17,11 @@ from .. import config
 from ..data_loader import PK, load_cohort_frame
 from ..partition import _call_partition, dirichlet_ward_mixture
 from . import client_app, server_app
+from .selection import select_federated, select_local
 from .task import (
     DEVICE, build_and_save_clients, free_gpu, init_model_on, load_client_graph,
-    local_eval, local_train, read_fed_history, read_fed_records, reset_fed_history,
-    seed_everything, write_run_config,
+    local_eval, local_train, local_train_tracked, read_fed_history, read_fed_records,
+    reset_fed_history, seed_everything, write_run_config,
 )
 
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
@@ -61,6 +62,39 @@ def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
         free_gpu()   # release before the next (possibly huge) client's model
     wavg = float(np.average(f1s, weights=ns)) if sum(ns) else 0.0
     return f1s, wavg, aucs, _wavg_finite(aucs, ns)
+
+
+def run_local_only_tracked(n_clients: int, cfg: dict, epochs: int = 60, eval_every: int = 4):
+    """Local-only with the SAME selection rule as the federated arms, from one training run.
+
+    Each hospital trains alone for `epochs` full-batch steps and is scored on val+test every
+    `eval_every` epochs (the federated cadence: local_epochs per round). Returns a dict with
+      legacy   -- final epoch, cutoff 0.5 (identical to `run_local_only`): f1s, wavg, aucs, auroc
+      val_*    -- per hospital: the (epoch, cutoff) with the best VALIDATION macro-F1, and the
+                  TEST macro-F1 read there; size-weighted mean and worst hospital."""
+    f1s, aucs, ns = [], [], []
+    v_f1, v_auc, v_thr, v_ep = [], [], [], []
+    for c in range(n_clients):
+        data = load_client_graph(c)
+        model = init_model_on(data, cfg)
+        hist = local_train_tracked(model, data, epochs, eval_every)
+        last = hist[-1]
+        f1s.append(round(last["macro_f1"], 4))
+        aucs.append(round(last["auroc"], 4) if last["auroc"] == last["auroc"] else None)
+        ns.append(last["n_test"])
+        sel = select_local([h["val_grid"] for h in hist], [h["test_grid"] for h in hist])
+        auc = hist[sel["ckpt"]]["auroc"]
+        v_f1.append(round(sel["test_f1"], 4))
+        v_auc.append(round(auc, 4) if auc == auc else None)
+        v_thr.append(sel["thr"])
+        v_ep.append(hist[sel["ckpt"]]["epoch"])
+        del model, data
+        free_gpu()
+    w = lambda v: float(np.average(v, weights=ns)) if sum(ns) else 0.0
+    return {"f1s": f1s, "wavg": w(f1s), "aucs": aucs, "auroc": _wavg_finite(aucs, ns),
+            "ns": ns, "val_f1s": v_f1, "val_wavg": w(v_f1), "val_worst": round(min(v_f1), 4),
+            "val_aucs": v_auc, "val_auroc": _wavg_finite(v_auc, ns),
+            "val_thr": v_thr, "val_epoch": v_ep}
 
 
 def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
@@ -134,10 +168,14 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     the same total epochs as FedAvg's per-round local epochs x rounds).
     strategy="fedavg" (default) runs plain FedAvg; strategy="topology" swaps the server
     aggregation for fingerprint-similarity mixing (Phase 5: TopologyAwareStrategy with
-    topo_temperature / topo_mode). Everything else — graphs, budgets, seeds, evaluation —
+    topo_temperature / topo_mode); "fedprox" / "fedmedian" / "fedtrimmedavg" run the
+    Phase-6 federated baselines under the identical protocol (server_app.py picks the
+    Flower strategy; FedProx additionally ships proximal_mu to clients — see
+    task.local_train). Everything else — graphs, budgets, seeds, evaluation —
     is identical, so the comparison is exactly apples-to-apples."""
-    if strategy not in ("fedavg", "topology"):
-        raise ValueError(f"strategy must be 'fedavg' or 'topology', got {strategy!r}")
+    if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg"):
+        raise ValueError(f"strategy must be one of 'fedavg', 'topology', 'fedprox', "
+                         f"'fedmedian', 'fedtrimmedavg', got {strategy!r}")
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
     from flwr.simulation import run_simulation
 
@@ -171,9 +209,14 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")
 
-    lo_f1s, lo_avg, lo_aucs, lo_auc = run_local_only(n_clients, cfg, epochs=local_only_epochs)
+    # one training per hospital -> legacy (final epoch @0.5) AND val-selected numbers
+    lo = run_local_only_tracked(n_clients, cfg, epochs=local_only_epochs, eval_every=local_epochs)
+    lo_f1s, lo_avg, lo_aucs, lo_auc = lo["f1s"], lo["wavg"], lo["aucs"], lo["auroc"]
     print(f"LOCAL-ONLY per-hospital macro-F1: {lo_f1s} | weighted avg = {lo_avg:.4f} "
           f"| AUROC = {lo_auc:.4f}")
+    print(f"LOCAL-ONLY (val-selected epoch+cutoff): {lo['val_f1s']} | weighted avg = "
+          f"{lo['val_wavg']:.4f} | worst = {lo['val_worst']} | epochs {lo['val_epoch']} "
+          f"| cutoffs {lo['val_thr']}")
 
     # pooled baseline, scored with the SAME per-hospital protocol (apples-to-apples)
     if compute_pooled:
@@ -209,10 +252,20 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     fed_f1s = [fed_pc.get(str(c)) for c in range(n_clients)]
     fed_aucs = [fed_pc_auc.get(str(c)) for c in range(n_clients)]
 
+    # Validation-selected view: the (round, cutoff) is chosen on VAL macro-F1; test is read once
+    # at that choice. None only for history written by an older client/server (no val grids).
+    vs = select_federated(records, n_clients) if fed else None
+    if vs is not None:
+        print(f"FEDERATED (val-selected round {vs['round']}, cutoff {vs['thr']:.3f}): "
+              f"test F1 {vs['test_f1']:.4f} (val {vs['val_score']:.4f}) | at 0.5: "
+              f"{vs['test_f1_at05']:.4f} | final round, val cutoff {vs['final_thr']:.3f}: "
+              f"{vs['final_f1']:.4f} | worst-hospital {vs['worst']} | AUROC {vs['auroc']}")
+
     pooled_str = f"{pl_avg:.4f}" + ("" if pl_worst is None else f" (worst {pl_worst})")
     strat_str = ("topology-aware "
                  f"(mode={topo_mode}, T={topo_temperature})" if strategy == "topology"
-                 else "FedAvg")
+                 else {"fedavg": "FedAvg", "fedprox": "FedProx",
+                       "fedmedian": "FedMedian", "fedtrimmedavg": "FedTrimmedAvg"}.get(strategy, strategy))
     print(f"\n=== Phase 3 comparison ({tag}) [{strat_str}] ===  [macro-F1 | AUROC]")
     print(f"  pooled (centralized, same protocol): {pooled_str} | AUROC {pl_auc:.4f}")
     print(f"  FedAvg  best-round / final     : {fed_best} / {fed_final} | AUROC {fed_auc_best}")
@@ -244,7 +297,16 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "sizes": sizes, "fed_by_round": fed,
             # AUROC (weighted, NaN-safe): threshold-free, literature-comparable
             "pooled_auroc": pl_auc, "local_only_auroc": lo_auc, "fedavg_auroc_best": fed_auc_best,
-            "fedavg_auroc_per_client": fed_aucs, "fedavg_auroc_by_round": fed_auc}
+            "fedavg_auroc_per_client": fed_aucs, "fedavg_auroc_by_round": fed_auc,
+            # --- validation-selected protocol (selection.py); test is read only at the choice
+            "val_fed": vs and round(vs["test_f1"], 4), "val_fed_at05": vs and round(vs["test_f1_at05"], 4),
+            "val_fed_final": vs and round(vs["final_f1"], 4), "val_fed_score": vs and round(vs["val_score"], 4),
+            "val_fed_round": vs and vs["round"], "val_fed_thr": vs and vs["thr"],
+            "val_worst_fed": vs and vs["worst"], "val_fed_per_client": vs and vs["per_client"],
+            "val_fed_auroc": vs and vs["auroc"],
+            "val_local": round(lo["val_wavg"], 4), "val_worst_local": lo["val_worst"],
+            "val_local_per_client": lo["val_f1s"], "val_local_auroc": lo["val_auroc"],
+            "val_local_thr": lo["val_thr"], "val_local_epoch": lo["val_epoch"]}
 
 
 def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
@@ -291,6 +353,12 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     wl, wf = ms("worst_local"), ms("worst_fed")   # worst-hospital (fairness) metric
     pla, loa, fba = ms("pooled_auroc"), ms("local_only_auroc"), ms("fedavg_auroc_best")  # AUROC
     gmean, gstd = round(float(np.mean(gains)), 4), round(float(np.std(gains)), 4)
+    # validation-selected protocol: same arms, round+cutoff chosen on val, test read once
+    vkeys = ("val_fed", "val_fed_at05", "val_fed_final", "val_worst_fed", "val_fed_auroc",
+             "val_local", "val_worst_local", "val_local_auroc")
+    vms = {k: ms(k) for k in vkeys}
+    vgains = [r["val_fed"] - r["val_local"] for r in runs if r.get("val_fed") is not None]
+    vg = (round(float(np.mean(vgains)), 4), round(float(np.std(vgains)), 4)) if vgains else (None, None)
     worst_gains = [r["worst_fed"] - r["worst_local"] for r in runs
                    if r.get("worst_fed") is not None]
     wgmean = round(float(np.mean(worst_gains)), 4) if worst_gains else None
@@ -306,6 +374,14 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     print(f"  worst-hosp local       : {wl[0]} +/- {wl[1]}")
     print(f"  worst-hosp FedAvg      : {wf[0]} +/- {wf[1]}")
     print(f"  worst-hosp gain        : {wgmean} +/- {wgstd}")
+    print(f"  --- VALIDATION-SELECTED (round+cutoff chosen on val; test read once) ---")
+    print(f"  local-only (val ep+cutoff): {vms['val_local'][0]} +/- {vms['val_local'][1]}  "
+          f"| worst {vms['val_worst_local'][0]} +/- {vms['val_worst_local'][1]}")
+    print(f"  federated  (val rd+cutoff): {vms['val_fed'][0]} +/- {vms['val_fed'][1]}  "
+          f"| worst {vms['val_worst_fed'][0]} +/- {vms['val_worst_fed'][1]}")
+    print(f"  federated  (val round, 0.5): {vms['val_fed_at05'][0]} +/- {vms['val_fed_at05'][1]}")
+    print(f"  federated  (final rd, val cutoff): {vms['val_fed_final'][0]} +/- {vms['val_fed_final'][1]}")
+    print(f"  gain (val-fed - val-local): {vg[0]} +/- {vg[1]}")
     print(f"  --- AUROC (weighted) ---")
     print(f"  pooled AUROC           : {pla[0]} +/- {pla[1]}")
     print(f"  local-only AUROC       : {loa[0]} +/- {loa[1]}")
@@ -315,6 +391,7 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "gain_mean": gmean, "gain_std": gstd, "worst_local": wl, "worst_fed": wf,
             "worst_gain_mean": wgmean, "worst_gain_std": wgstd,
             "pooled_auroc": pla, "local_only_auroc": loa, "fedavg_auroc_best": fba,
+            "val_selected": vms, "val_gain": vg,
             "runs": runs}
 
 
