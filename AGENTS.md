@@ -80,8 +80,8 @@ export ARMD_DIR="/path/to/your/ARMD"   # persist in ~/.zshrc
 | Louvain per-hospital / 10-hospital six-method comparison | `notebooks/11`, `12` (Colab GPU) |
 | Raw committed run log | `res.txt` (572 lines, Colab output) |
 
-Tests: 10 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
-`test_val_selection` + `test_final_protocol` + `test_final_analysis` + `test_regimes` (torch-free; round/cutoff selection, per-hospital cutoffs, v3 weights, analysis, data regimes), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
+Tests: 11 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
+`test_val_selection` + `test_final_protocol` + `test_final_analysis` + `test_regimes` + `test_simft` (torch-free; round/cutoff selection, per-hospital cutoffs, v3 weights, analysis, data regimes), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
 (needs flwr). All green as of `d05b736` (federated pair green on Colab, skip locally).
 
 ## Architecture (data flow)
@@ -146,6 +146,7 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 | 14 | louvain_val_selection | Louvain, six arms, **validation-selected protocol** (round + cutoff chosen on val, test read once); Colab or local; writes `results/amr_louvain_val.json` |
 | 16 | louvain_final | **FINAL protocol** on Louvain (3 hospitals): per-hospital cutoffs, FedAvg + fine-tune, topo v3 (3 temperatures + shuffled control), plus Uniform / Topo v1 / FedProx / FedMedian (9 federated runs per seed); writes `results/amr_louvain_final_<TAG>.json` |
 | 17 | org10_final | **FINAL protocol** on `organism_community` n=10, same 9 arms; `RUN_ARMS`/`TAG` split work across accounts, cell 9 merges; writes `results/amr_org10_final_<TAG>.json` |
+| 19 | simft | **SimFT** (pre-registered in `docs/2026-10-28-simft-preregistration.md`): personalized aggregation weighted by function-space similarity (hospital i scores every hospital's model on its validation half A) + final fine-tune; settings: antibiogram-conflict (5 hospitals; FedAvg+local+fine-tune run too) and ward10 at 10% data (baselines read from nb18); writes `results/amr_simft_<setting>_<TAG>.json` |
 | 18 | low_data_and_new_site | **Where federation helps** (pre-registered in `docs/2026-10-28-low-data-and-new-site-preregistration.md`): ward-Dirichlet 10 hospitals; Part A low-data curve (keep 100/25/10/3% of train+val patients; local-only vs FedAvg vs FedAvg+fine-tune), Part B new hospital (hold one out; zero-shot / fine-tuned / scratch at k labelled patients); writes `results/amr_regimes_<TAG>.json` |
 | 15 | org10_val_controls | `organism_community` n=10, **validation-selected protocol**, 8 arms: the six from nb12 plus two topology controls — `topo_shuffled` (each hospital gets another's fingerprint) and `invsize` (weights ∝ 1/n_train); `RUN_ARMS`/`TAG` split work across accounts, cell 8 merges; writes `results/amr_org10_val_<TAG>.json` |
 | 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (run 2026-10-25; topo arm on Mac CPU, rest on Colab) |

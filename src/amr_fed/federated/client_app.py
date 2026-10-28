@@ -191,7 +191,7 @@ class FlowerClient(NumPyClient):
 
     def evaluate(self, parameters, config):
         set_weights(self.model, parameters)
-        ev = local_eval_full(self.model, self.data)
+        ev = local_eval_full(self.model, self.data, self.cfg.get("val_half"))
         # cid -> per-hospital breakdown; auroc alongside macro_f1. The val/test cutoff grids
         # (JSON, 29 floats each) let the server pick the round/cutoff on VALIDATION only
         # (see selection.py); macro_f1/auroc stay the legacy test @0.5 numbers.

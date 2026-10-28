@@ -283,3 +283,95 @@ def newsite_report(res: dict) -> str:
                 out.append(_fmt_stat(f"k={k}: {name}", _stat(d), d))
         out.append("")
     return "\n".join(out) if out else "no new-hospital results yet"
+
+
+# ---------------------------------------------------------------- notebook 19: SimFT
+def _pc(arr) -> np.ndarray:
+    return np.array([np.nan if v is None else v for v in arr], dtype=float)
+
+
+def simft_arm_runs(res: dict, arm: str):
+    """(runs, how) for a pseudo-arm. SimFT arms are scored after the final fine-tune, ``*_noft`` before it."""
+    tau = res.get("_meta", {}).get("chosen_tau")
+    if arm in ("local", "fedavg", "fedavg_ft"):
+        return res["fedavg"]["runs"]
+    if arm in ("simft", "simft_noft"):
+        return res[f"simft_t{tau:g}"]["runs"]
+    if arm in ("simft_flat", "simft_flat_noft"):
+        return res["simft_flat"]["runs"]
+    raise KeyError(arm)
+
+
+def simft_values(res: dict, arm: str) -> dict:
+    """Per-seed values for an arm: PRIMARY ``mean`` = UNWEIGHTED mean over hospitals of test macro-F1 (every
+    hospital at its own validation-chosen cutoff); also size-weighted ``wmean`` and ``worst`` hospital."""
+    runs = simft_arm_runs(res, arm)
+    if arm == "local":
+        per = [_pc(r["val_local_per_client"]) for r in runs]
+    elif arm in ("fedavg", "simft_noft", "simft_flat_noft"):
+        per = [_pc(r["phc_per_client"]) for r in runs]
+    else:                                              # fedavg_ft, simft, simft_flat: after the final fine-tune
+        per = [_pc(r["finetune"]["per_client"]) for r in runs]
+    w = [np.array([t["test"] for t in r["n_triples"]], dtype=float) for r in runs]
+    return {"mean": np.array([np.nanmean(x) for x in per]),
+            "wmean": np.array([np.nansum(x * ww) / ww[~np.isnan(x)].sum() for x, ww in zip(per, w)]),
+            "worst": np.array([np.nanmin(x) for x in per])}
+
+
+SIMFT_PRIMARY = [("simft", "fedavg_ft"), ("simft", "local"), ("simft", "simft_flat")]
+SIMFT_SECONDARY = [("simft", "fedavg"), ("simft_noft", "fedavg"), ("simft_flat", "fedavg_ft"),
+                   ("fedavg_ft", "local"), ("fedavg", "local")]
+SIMFT_NAMES = {"local": "Local-only", "fedavg": "FedAvg", "fedavg_ft": "FedAvg+fine-tune", "simft": "SimFT+fine-tune",
+               "simft_flat": "SimFT-flat+fine-tune", "simft_noft": "SimFT (no fine-tune)",
+               "simft_flat_noft": "SimFT-flat (no fine-tune)"}
+
+
+def simft_report(res: dict) -> str:
+    arms = ["local", "fedavg", "fedavg_ft", "simft_noft", "simft", "simft_flat_noft", "simft_flat"]
+    avail = []
+    for a in arms:
+        try:
+            simft_values(res, a)
+            avail.append(a)
+        except (KeyError, TypeError):
+            pass
+    tau = res.get("_meta", {}).get("chosen_tau")
+    lines = [f"SimFT temperature chosen on validation half B: {tau} | scores {res.get('_meta', {}).get('tau_val_scores')}",
+             f"{'method':<27}{'mean over hospitals':<22}{'size-weighted':<22}{'worst hospital':<22}"]
+    for a in avail:
+        v = simft_values(res, a)
+        lines.append(f"{SIMFT_NAMES[a]:<27}{ms(v['mean']):<22}{ms(v['wmean']):<22}{ms(v['worst']):<22}")
+
+    def block(title, pairs):
+        out = [f"--- {title} ---"]
+        for a, b in pairs:
+            if a in avail and b in avail:
+                for metric, mname in (("mean", "mean over hospitals"), ("wmean", "size-weighted"), ("worst", "worst hospital")):
+                    d = simft_values(res, a)[metric] - simft_values(res, b)[metric]
+                    out.append(_fmt_stat(f"{SIMFT_NAMES[a][:17]} - {SIMFT_NAMES[b][:17]} [{mname[:8]}]", _stat(d), d))
+        return out
+
+    lines += [""] + block("PRIMARY (pre-registered; first metric of each triple is the primary one)", SIMFT_PRIMARY)
+    lines += [""] + block("secondary", SIMFT_SECONDARY)
+    if all(a in avail for a in ("simft", "fedavg_ft", "local", "simft_flat")):
+        rows = [(a, b, _stat(simft_values(res, a)["mean"] - simft_values(res, b)["mean"])) for a, b in SIMFT_PRIMARY]
+        ok = all(st["lo"] > 0 for _, _, st in rows)
+        lines += ["", "PRE-REGISTERED VERDICT: " + ("SimFT WINS (all three primary intervals above zero)" if ok else
+                                                  "SimFT does NOT win")]
+        lines += [f"  {'WIN' if st['lo'] > 0 else 'no win'}: {SIMFT_NAMES[a]} - {SIMFT_NAMES[b]} = {st['mean']:+.4f} "
+                  f"[{st['lo']:+.4f}, {st['hi']:+.4f}]" for a, b, st in rows]
+    return "\n".join(lines)
+
+
+def simft_weights_report(res: dict) -> str:
+    """Mean mixing matrix at the last round and how much each hospital keeps of itself, per seed."""
+    out = []
+    for key in [k for k in res if k.startswith("simft_t") or k == "simft_flat"]:
+        for r, s in zip(res[key]["runs"], res[key]["seeds"]):
+            rounds = r.get("simft_rounds") or []
+            if not rounds:
+                continue
+            W = np.array(rounds[-1]["W"])
+            out.append(f"{key} seed {s}: self-weight {np.round(np.diag(W), 2).tolist()} | most-used neighbour per hospital "
+                       f"{[int(np.argmax(np.where(np.eye(len(W), dtype=bool)[i], -1, W[i]))) for i in range(len(W))]}")
+    return "\n".join(out)

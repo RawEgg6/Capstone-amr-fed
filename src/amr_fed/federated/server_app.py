@@ -15,7 +15,7 @@ from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
 
 from .selection import grid_record
-from .strategy import PersonalizedStrategy, SavingFedAvg, TopologyAwareStrategy
+from .strategy import PersonalizedStrategy, SavingFedAvg, SimFTStrategy, TopologyAwareStrategy
 from .task import (
     append_fed_metric, get_weights, init_model_on, load_client_graph, read_run_config,
     seed_everything,
@@ -80,6 +80,10 @@ def server_fn(context: Context):
         )
     elif strategy_name == "personalized":
         strategy = PersonalizedStrategy(W=cfg["personal_W"], **common)
+    elif strategy_name == "simft":
+        sf = cfg["simft"]
+        strategy = SimFTStrategy(tau=float(sf["tau"]), self_floor=float(sf["self_floor"]),
+                                 flat=bool(sf["flat"]), **common)
     elif strategy_name == "fedmedian":
         from flwr.server.strategy import FedMedian
         strategy = FedMedian(**common)

@@ -68,6 +68,37 @@ def append_fed_metric(macro_f1: float, per_client: dict | None = None,
         f.write(json.dumps(rec) + "\n")
 
 
+SIMFT_ROUNDS = CLIENTS_DIR / "simft_rounds.jsonl"
+
+
+def reset_simft_files() -> None:
+    CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+    SIMFT_ROUNDS.write_text("")
+    for f in CLIENTS_DIR.glob("simft_personal_*.npz"):
+        f.unlink()
+
+
+def append_simft_round(rec: dict) -> None:
+    with open(SIMFT_ROUNDS, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def read_simft_rounds() -> list[dict]:
+    if not SIMFT_ROUNDS.exists():
+        return []
+    return [json.loads(x) for x in SIMFT_ROUNDS.read_text().splitlines() if x.strip()]
+
+
+def save_personal_params(cid: int, weights) -> None:
+    CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez(CLIENTS_DIR / f"simft_personal_{cid}.npz", *weights)
+
+
+def load_personal_params(cid: int) -> list[np.ndarray]:
+    z = np.load(CLIENTS_DIR / f"simft_personal_{cid}.npz")
+    return [z[f"arr_{i}"] for i in range(len(z.files))]
+
+
 GLOBAL_PARAMS = CLIENTS_DIR / "global_final.npz"
 
 
@@ -286,8 +317,46 @@ def local_eval(model, data, mask_name: str = "test_mask") -> tuple[float, float,
     return result
 
 
+def _val_mask(data, half: str | None):
+    """Validation mask, optionally one half of the validation PATIENTS (parity of the patient node id):
+    half "A" is used to score other hospitals' models (SimFT weights), half "B" to select round / cutoff /
+    epoch, so the weights never see the rows that choose the reported number. None = all validation rows."""
+    mask = data.val_mask
+    if half is None:
+        return mask
+    parity = (data.triple_index[0] % 2) == 0
+    return mask & (parity if half == "A" else ~parity)
+
+
 @torch.no_grad()
-def local_eval_full(model, data) -> dict:
+def cross_eval_losses(models, cfg: dict, half: str = "A") -> np.ndarray:
+    """L[i, j] = class-weighted BCE of model j on hospital i's validation half ``half`` (NaN when that half
+    is empty). One hospital graph is in memory at a time. In a deployment each hospital would score the
+    received models itself and return only these numbers."""
+    n = len(models)
+    L = np.full((n, n), np.nan)
+    for i in range(n):
+        data = load_client_graph(i).to(DEVICE)
+        mask = _val_mask(data, half).to(DEVICE)
+        if int(mask.sum()) > 0:
+            tri, y = data.triple_index.to(DEVICE), data.triple_label.to(DEVICE).float()
+            tf = getattr(data, "triple_feat", None)
+            tf = tf.to(DEVICE) if tf is not None else None
+            loss_fn = nn.BCEWithLogitsLoss(pos_weight=data.train_pos_weight.to(DEVICE))
+            model = init_model_on(data, cfg)
+            model.eval()
+            for j in range(n):
+                set_weights(model, models[j])
+                out = model(data.x_dict, data.edge_index_dict, tri[:, mask], tf[mask] if tf is not None else None)
+                L[i, j] = float(loss_fn(out, y[mask]))
+            del model
+        del data
+        free_gpu()
+    return L
+
+
+@torch.no_grad()
+def local_eval_full(model, data, val_half: str | None = None) -> dict:
     """Score the model on this hospital's VAL and TEST rows in one pass.
 
     Returns n_test / n_val, the legacy test macro-F1 @0.5 and AUROC (identical to
@@ -301,7 +370,7 @@ def local_eval_full(model, data) -> dict:
     model.eval()
     out = {}
     for name in ("val", "test"):
-        mask = getattr(data, f"{name}_mask").to(DEVICE)
+        mask = (_val_mask(data, val_half) if name == "val" else data.test_mask).to(DEVICE)
         n = int(mask.sum())
         out[f"n_{name}"] = n
         if n == 0:
@@ -328,7 +397,8 @@ def local_eval_full(model, data) -> dict:
 
 
 def local_train_tracked(model, data, epochs: int, eval_every: int, lr: float = 1e-3,
-                        weight_decay: float = 1e-4, eval_at_start: bool = False) -> list[dict]:
+                        weight_decay: float = 1e-4, eval_at_start: bool = False,
+                        val_half: str | None = None) -> list[dict]:
     """`local_train` (same optimiser, same one-full-batch-step-per-epoch loop) that also scores
     the model on val+test every `eval_every` epochs and at the last epoch. Evaluation runs in
     eval() mode under no_grad, so it consumes no RNG and leaves training bit-identical to
@@ -344,7 +414,7 @@ def local_train_tracked(model, data, epochs: int, eval_every: int, lr: float = 1
     ckpts = sorted(set(range(eval_every, epochs + 1, eval_every)) | {epochs})
     history = []
     if eval_at_start:   # epoch 0 = the model as handed in (used by the fine-tune baseline)
-        history.append({"epoch": 0, **local_eval_full(model, data)})
+        history.append({"epoch": 0, **local_eval_full(model, data, val_half)})
     model.train()
     for e in range(1, epochs + 1):
         opt.zero_grad()
@@ -353,7 +423,7 @@ def local_train_tracked(model, data, epochs: int, eval_every: int, lr: float = 1
         loss_fn(out, y[tr]).backward()
         opt.step()
         if e in ckpts:
-            history.append({"epoch": e, **local_eval_full(model, data)})
+            history.append({"epoch": e, **local_eval_full(model, data, val_half)})
             model.train()
     free_gpu()
     return history

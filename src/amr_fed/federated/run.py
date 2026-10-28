@@ -25,7 +25,8 @@ from .selection import select_federated, select_federated_phc, select_local
 from .task import (
     DEVICE, build_and_save_clients, free_gpu, init_model_on, load_client_graph, load_global_params,
     local_eval, local_train, local_train_tracked, read_fed_history, read_fed_records,
-    reset_fed_history, seed_everything, set_weights, write_run_config,
+    load_personal_params, read_simft_rounds, reset_fed_history, reset_simft_files, seed_everything,
+    set_weights, write_run_config,
 )
 
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
@@ -196,7 +197,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
                topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
                personalized_T: float | None = None, personalized_shuffle: bool = False,
-               save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False):
+               save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False,
+               simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False):
     """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
     Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
     dispatched by keyword match on its signature (see partition._call_partition): n_clients
@@ -221,16 +223,19 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     finetune_epochs>0 (FedAvg only) also fine-tunes the final global model at every hospital;
     save_assignment stores the patient->hospital map in the result.
     Low-data experiments: train_frac < 1 keeps that fraction of every hospital's train and validation
-    patients (same test patients); save_global=True persists the final global model (task.load_global_params)."""
-    if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg", "personalized"):
+    patients (same test patients); save_global=True persists the final global model (task.load_global_params).
+    strategy="simft": personalized aggregation weighted by function-space similarity (simft.py); validation is split
+    into halves (A scores other hospitals' models, B selects round / cutoff / epoch); finetune_epochs then
+    fine-tunes each hospital's own final personalized model. simft_flat=True is the equal-neighbour ablation."""
+    if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg", "personalized", "simft"):
         raise ValueError(f"strategy must be one of 'fedavg', 'topology', 'fedprox', "
-                         f"'fedmedian', 'fedtrimmedavg', 'personalized', got {strategy!r}")
+                         f"'fedmedian', 'fedtrimmedavg', 'personalized', 'simft', got {strategy!r}")
     if strategy == "personalized" and personalized_T is None:
         raise ValueError("strategy='personalized' needs personalized_T")
     if personalized_shuffle and strategy != "personalized":
         raise ValueError("personalized_shuffle=True only applies to strategy='personalized'")
-    if finetune_epochs and strategy != "fedavg":
-        raise ValueError("finetune_epochs only applies to strategy='fedavg'")
+    if finetune_epochs and strategy not in ("fedavg", "simft"):
+        raise ValueError("finetune_epochs only applies to strategy='fedavg' or 'simft'")
     if topo_shuffle and strategy != "topology":
         raise ValueError("topo_shuffle=True only applies to strategy='topology'")
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
@@ -253,6 +258,11 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     fps_all = fps_train = None
     if finetune_epochs or save_global:
         cfg["save_global"] = True
+    val_half = None
+    if strategy == "simft":
+        cfg["simft"] = {"tau": float(simft_tau), "self_floor": float(simft_self_floor), "flat": bool(simft_flat)}
+        cfg["val_half"] = val_half = "B"      # half A scores other hospitals' models, half B selects
+        print(f"{tag} | strategy=simft (tau={simft_tau}, self_floor={simft_self_floor}, flat={simft_flat})")
     if strategy in ("topology", "personalized") or save_assignment:
         # fingerprints of every hospital, from ALL rows (v1 / topo) and from TRAIN rows only (v3)
         from ..topology import compute_fingerprint, train_frame
@@ -330,6 +340,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
 
     ngpu = (0.9 / n_clients) if DEVICE == "cuda" else 0.0
     reset_fed_history()
+    if strategy == "simft":
+        reset_simft_files()
     free_gpu()  # clear the local-only phase's allocations before the Ray clients start
     run_simulation(  # returns None in flwr 1.23; the strategy logs per-round F1 to disk
         server_app=server_app.app,
@@ -379,13 +391,14 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     if finetune_epochs:
         # FedAvg + fine-tune: start every hospital from the FINAL global model, train a few local
         # epochs, and pick (epoch incl. 0, own cutoff) on that hospital's validation rows.
-        gp = load_global_params()
+        gp = None if strategy == "simft" else load_global_params()
         ft_f1, ft_aucs, ft_thr, ft_ep, ft_detail = [], [], [], [], []
         for c in range(n_clients):
             data = load_client_graph(c)
             model = init_model_on(data, cfg)
-            set_weights(model, gp)
-            hist = local_train_tracked(model, data, finetune_epochs, eval_every=2, eval_at_start=True)
+            set_weights(model, load_personal_params(c) if strategy == "simft" else gp)
+            hist = local_train_tracked(model, data, finetune_epochs, eval_every=2, eval_at_start=True,
+                                       val_half=val_half)
             sel = select_local([h["val_grid"] for h in hist], [h["test_grid"] for h in hist])
             auc = hist[sel["ckpt"]]["test_auroc"]
             ft_f1.append(round(sel["test_f1"], 4)); ft_thr.append(sel["thr"])
@@ -456,6 +469,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "phc_final": phc and phc["final_f1"], "phc_auroc": phc and phc["auroc"],
             "finetune": ft, "ft_f1": ft and round(ft["f1"], 4), "ft_worst": ft and ft["worst"],
             "personalized_T": personalized_T, "personalized_shuffle": personalized_shuffle,
+            "simft": cfg.get("simft"), "simft_rounds": read_simft_rounds() if strategy == "simft" else None,
             "agg_weights": agg_weights, "fingerprints_all": fps_all, "fingerprints_train": fps_train,
             "n_triples": n_triples, "local_detail": lo.get("detail"),
             "records": _slim_records(records),
@@ -473,7 +487,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
                   topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
                   personalized_T: float | None = None, personalized_shuffle: bool = False,
-                  save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False):
+                  save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False,
+                  simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
     pass label_dirichlet / specimen_baseline for the non-IID settings).
@@ -502,7 +517,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                personalized_T=personalized_T,
                                personalized_shuffle=personalized_shuffle,
                                save_assignment=save_assignment, train_frac=train_frac,
-                               save_global=save_global))
+                               save_global=save_global, simft_tau=simft_tau,
+                               simft_self_floor=simft_self_floor, simft_flat=simft_flat))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN
