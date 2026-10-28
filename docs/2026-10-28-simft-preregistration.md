@@ -38,16 +38,19 @@ Hospitals 1..n; model of hospital j after local training in a round: θ_j.
 
 Round 1 starts from a common initialisation, so the first weights are close to flat; this is expected.
 
-## 3. Settings (one partition per seed; seeds 42–46)
+## 3. Settings (one partition per seed; seeds 42–46) — only the SimFT arms are trained
 
-| Setting | Split | Hospitals | Why |
-|---|---|---|---|
-| **conflict** | `antibiogram_conflict(n_clients=5)` (deterministic, taper shares 0.55^i, floor 3%; design and validity checks in `2026-10-18-antibiogram-conflict-split.md`) | 5, about 47 / 26 / 14 / 8 / 4% of patients | hospitals disagree about the same bug-drug pairs (concept shift): the case where a single shared model suffers and picking *similar* hospitals has a mechanism |
-| **ward10** | `dirichlet_ward_mixture(10, alpha=0.5)` keeping **10%** of every hospital's train/validation patients (test unchanged) | 10 (partition changes with the seed) | the low-data regime where notebook 18 showed federation helps most |
+In every setting the baselines (local-only, FedAvg, FedAvg + fine-tune) are **read from the notebook that already ran them on the same split and seeds**;
+notebook 19 trains only SimFT at τ = 0.5, SimFT at τ = 1.0 and SimFT-flat (3 arms × 5 seeds per setting).
 
-Arms run in notebook 19: **conflict** — FedAvg (+ local-only, + fine-tune), SimFT τ = 0.5, SimFT τ = 1.0, SimFT-flat (4 arms × 5 seeds);
-**ward10** — SimFT τ = 0.5, τ = 1.0, SimFT-flat only (3 arms × 5 seeds); its local-only, FedAvg and FedAvg + fine-tune come from notebook 18's `scarcity_f0.1`
-(same seeds, partitions and subsample; run on a Tesla T4).
+| Setting | Split | Hospitals | Baselines from | Why |
+|---|---|---|---|---|
+| **louvain** | `louvain_split(n_clients=3)` | 3 (about 73 / 21 / 5%) | notebook 16, `amr_louvain_final_all.json` (Mac CPU) | main-paper split; cheap |
+| **org10** | `organism_community(n_clients=10)` | 10 (one partition; sizes 2.9k–38k) | notebook 17, `amr_org10_final_all.json` (FedAvg arm only) | main-paper split; hospitals hold different organisms, so some are genuinely more alike than others |
+| **ward10** | `dirichlet_ward_mixture(10, alpha=0.5)`, **10%** of every hospital's train/validation patients kept (test unchanged) | 10 (partition changes with the seed) | notebook 18, `amr_regimes_all.json`, `scarcity_f0.1` (Tesla T4) | the low-data regime where federation helped most |
+
+Louvain and org10 are the primary settings (the headline splits of the paper, not chosen because the method is expected to win there); ward10 is an additional low-data setting.
+Each setting is judged separately by the win rule in section 5.
 
 ## 4. Metrics
 
@@ -69,23 +72,25 @@ matrix **L** of every round (`simft_rounds`) and the per-hospital fine-tune deta
 
 ## 7. Compute
 
-About as long as notebook 16: conflict 4 arms (FedAvg about 3 units per seed, SimFT arms about 1.5–2 units because of the n² cross-evaluation per round),
-ward10 3 small arms on 10%-size data. Resume is seed by seed.
+3 arms × 5 seeds per setting, no FedAvg rerun. SimFT arms cost about 1.5–2 units per seed (a unit is one plain federated run) because of the n² cross-evaluation per round:
+louvain about 45 minutes on a Mac CPU; ward10 small (10%-size data); org10 the heaviest (10 × 10 scoring passes per round on a 38k-patient graph), best on Colab. Resume is seed by seed.
 
 ## 8. Limits and honest expectations
 
-- **Odds.** I expect a small effect at best (0.001–0.005 F1), at or below what five seeds can reliably detect (about 0.003–0.005). The most plausible place for a real effect is the
-  conflict split; a tie is a likely outcome, and FedAvg + fine-tune may stay on top.
+- **Odds.** I expect a small effect at best (0.001–0.005 F1), at or below what five seeds can reliably detect (about 0.003–0.005). On louvain and org10 federation barely beats local-only on F1 (only fine-tuning helps), so there is little room; org10 (different organisms per hospital) and ward10 at
+  10% data are the likelier places for an effect. A tie is a likely outcome, and FedAvg + fine-tune may stay on top.
 - **Protocol cost.** Cross-evaluation shows every hospital's model to every other hospital (n× communication) — unlike FedAvg. The write-up must say so.
 - **Validation is split in halves** for SimFT (A for weights, B for selection), so SimFT selects on half as much validation as the baselines (conservative for SimFT, noisier selection).
-- **Hardware pairing.** ward10 baselines were produced on a Tesla T4 (notebook 18); run notebook 19 on the same kind of machine if possible, otherwise small
-  non-determinism differences enter the paired comparisons.
+- **Hardware pairing.** louvain baselines were produced on a Mac CPU (notebook 16) and ward10 baselines on a Tesla T4 (notebook 18); run each setting on the same kind of machine if possible, otherwise small
+  non-determinism differences enter the paired comparisons (org10: notebook 17 ran on a Mac CPU).
 - **Training budget.** Everything is still improving at 8 rounds; SimFT and the baseline fine-tune get the same 8 extra epochs, so that comparison is budget-matched; the comparison with local-only is not
   (see `2026-10-28-low-data-and-new-site-results.md`, caveat 1).
-- Five seeds; the conflict split is one partition (seeds vary training only); ward10 is five partitions.
+- Five seeds; org10 is one partition (seeds vary training only), louvain has three distinct partitions, ward10 five.
 - SimFT resembles FedFomo (validation-based weighting) and pFedGraph/FedAMP (personalized mixing); the novelty claim, if any, is the combination with a final fine-tune and the function-space
   similarity inside a graph-structured clinical setting. Related work must be cited, and a head-to-head against a FedFomo or pFedGraph implementation was not run here.
 
 ## 9. Iterations (append below, dated)
 
-_None yet._
+- **2026-10-28 (before any run of notebook 19):** the antibiogram-conflict setting was dropped. Reasons: (i) its FedAvg baseline would have had to be rerun under the final protocol, while the other splits already have
+  local-only / FedAvg / FedAvg + fine-tune; (ii) the earlier pre-registered experiment on that split (2026-10-18, notebook 08) found that FedAvg *helps* the minority hospital (+0.028) — the concept-shift condition did not reproduce, so the
+  rationale I gave for the split (a mechanism for similarity-based weighting) was too optimistic. Louvain and org10 (existing baselines, headline splits) replace it as the primary settings; ward10 at 10% data stays as the low-data setting.

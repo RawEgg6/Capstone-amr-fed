@@ -71,10 +71,15 @@ def test_choose_and_report() -> None:
     v = A.simft_values(res, "simft")
     assert abs(v["mean"].mean() - 0.712) < 0.003
     assert "self-weight" in A.simft_weights_report(res)
-    specs_c = [k for k, _, _ in SR.arm_specs("conflict")]
-    specs_w = [k for k, _, _ in SR.arm_specs("ward10")]
-    assert specs_c == ["fedavg", "simft_t0.5", "simft_t1", "simft_flat"] and specs_w == ["simft_t0.5", "simft_t1", "simft_flat"]
+    for setting in ("louvain", "org10", "ward10"):
+        assert [k for k, _, _ in SR.arm_specs(setting)] == ["simft_t0.5", "simft_t1", "simft_flat"]
     assert dict((k, e) for k, _, e in SR.arm_specs("ward10"))["simft_flat"]["train_frac"] == 0.10
+    assert "train_frac" not in dict((k, e) for k, _, e in SR.arm_specs("louvain"))["simft_flat"]
+    try:
+        SR.arm_specs("conflict")
+        raise AssertionError("the conflict setting was dropped")
+    except ValueError:
+        pass
     print("OK: temperature chosen on validation, SimFT report/verdict run, arm lists as pre-registered")
 
 
