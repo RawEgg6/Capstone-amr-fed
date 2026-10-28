@@ -58,6 +58,28 @@ def choose_temperature(res: dict) -> tuple[float, dict]:
     return best, scores
 
 
+def run_seedwise(res: dict, key: str, seeds, one_seed, checkpoint=None) -> None:
+    """Run ``one_seed(seed) -> dict`` for every seed of arm ``key`` (resume-safe). Each finished seed is
+    checkpointed under ``res['_partial']``, so a Colab disconnect costs at most the seed that was running;
+    when all seeds are done the arm is stored as ``{"seeds": [...], "runs": [...]}``."""
+    if key in res:
+        print(f"skip {key}: already saved")
+        return
+    part = res.setdefault("_partial", {}).setdefault(key, {})
+    for s in seeds:
+        if str(s) in part:
+            print(f"skip {key} seed {s}: already saved")
+            continue
+        part[str(s)] = one_seed(s)
+        if checkpoint:
+            checkpoint(res)
+    res[key] = {"seeds": list(seeds), "runs": [part[str(s)] for s in seeds]}
+    del res["_partial"][key]
+    if checkpoint:
+        checkpoint(res)
+    print(f"checkpoint saved after {key}")
+
+
 def run_all(res: dict, *, prefix: str, include_trimmed: bool, kw: dict, run_arms=None, checkpoint=None,
             ray_shutdown=None) -> dict:
     """Run every arm that is not already in ``res`` (resume-safe). ``checkpoint(res)`` is called
@@ -70,27 +92,11 @@ def run_all(res: dict, *, prefix: str, include_trimmed: bool, kw: dict, run_arms
     seeds = tuple(kw["seeds"])
 
     def run_one(key, label, extra):
-        """One arm, seed by seed: each finished seed is checkpointed, so a Colab disconnect costs at most
-        the seed that was running, not the whole arm."""
-        if key in res:
-            print(f"skip {key}: already saved")
-            return
-        part = res.setdefault("_partial", {}).setdefault(key, {})
-        for s in seeds:
-            if str(s) in part:
-                print(f"skip {key} seed {s}: already saved")
-                continue
+        def one(seed):
             if ray_shutdown:
                 ray_shutdown()
-            one = run_multiseed(label=label, **dict(kw, seeds=(s,)), **extra)
-            part[str(s)] = one["runs"][0]
-            if checkpoint:
-                checkpoint(res)
-        res[key] = {"seeds": list(seeds), "runs": [part[str(s)] for s in seeds]}
-        del res["_partial"][key]
-        if checkpoint:
-            checkpoint(res)
-        print(f"checkpoint saved after {key}")
+            return run_multiseed(label=label, **dict(kw, seeds=(seed,)), **extra)["runs"][0]
+        run_seedwise(res, key, seeds, one, checkpoint)
 
     for key, label, extra in specs:
         if want(key):

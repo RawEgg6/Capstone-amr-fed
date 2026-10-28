@@ -335,7 +335,7 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
                  procedure_cache: str | None = None, rich_patient: bool = False,
                  labvital_cache: str | None = None, patient_history: bool = False,
                  specimen: bool = False, prescriptions: bool = False,
-                 prescription_cache: str | None = None) -> dict:
+                 prescription_cache: str | None = None, split_code: dict | None = None) -> dict:
     """Pure pandas/numpy build. `df` = a data_loader.load_cohort_frame() result.
 
     Returns a dict of node maps, float feature matrices, edge_index arrays, the
@@ -359,7 +359,9 @@ def build_arrays(df: pd.DataFrame, seed: int = config.SEED, enrich: tuple = (),
     y = df["label"].to_numpy().astype(np.float32)
 
     # --- patient-grouped split (a patient's tests all land in one split) ---
-    code = _patient_grouped_split(df[PK].to_numpy(), seed)
+    # `split_code` (patient -> 0/1/2) lets a caller keep the split of the FULL frame while building the
+    # graph from a reduced one (low-data experiments: same test patients at every data level)
+    code = split_code if split_code is not None else _patient_grouped_split(df[PK].to_numpy(), seed)
     split = df[PK].map(code).to_numpy()          # per-triple split code {0,1,2}
     is_train = split == 0
     global_rate = float(y[is_train].mean())

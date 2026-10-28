@@ -130,16 +130,27 @@ def _pad_canonical_edges(data):
     return data
 
 
+def build_graph(sub, seed: int, patient_history: bool = True, split_code: dict | None = None):
+    """One hospital's padded core graph from its frame (optionally with a precomputed split code)."""
+    return _pad_canonical_edges(to_hetero_data(
+        build_arrays(sub, seed=seed, patient_history=patient_history, split_code=split_code)))
+
+
 def build_and_save_clients(df, assignment, n_clients: int, seed: int = config.SEED,
-                           patient_history: bool = True) -> list[int]:
+                           patient_history: bool = True, train_frac: float = 1.0) -> list[int]:
     """Build one core graph per hospital (patient subset), pad edges, save to disk.
     patient_history adds the per-test prior-resistance decoder features (the Phase-1
-    winning feature) to every client. Returns per-client patient counts."""
+    winning feature) to every client. ``train_frac`` < 1 keeps only that fraction of every
+    hospital's TRAIN and VALIDATION patients (test patients are untouched, so the test set is
+    identical at every data level; see regimes.subsample_frame). Returns per-client patient counts."""
+    from .regimes import subsample_frame
     sizes = []
     for c in range(n_clients):
         sub = df[df[PK].map(assignment) == c]
-        data = _pad_canonical_edges(to_hetero_data(
-            build_arrays(sub, seed=seed, patient_history=patient_history)))
+        code = None
+        if train_frac < 1.0:
+            sub, code = subsample_frame(sub, seed=seed, cid=c, frac=train_frac)
+        data = build_graph(sub, seed, patient_history, code)
         save_client_graph(c, data)
         sizes.append(int(data["patient"].num_nodes))
     return sizes

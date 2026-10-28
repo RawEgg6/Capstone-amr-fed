@@ -196,7 +196,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
                topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
                personalized_T: float | None = None, personalized_shuffle: bool = False,
-               save_assignment: bool = False):
+               save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False):
     """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
     Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
     dispatched by keyword match on its signature (see partition._call_partition): n_clients
@@ -219,7 +219,9 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     similarity temperature is personalized_T, personalized_shuffle hands each hospital another's
     fingerprint); compute_local=False skips local-only (train it once per seed in the FedAvg arm);
     finetune_epochs>0 (FedAvg only) also fine-tunes the final global model at every hospital;
-    save_assignment stores the patient->hospital map in the result."""
+    save_assignment stores the patient->hospital map in the result.
+    Low-data experiments: train_frac < 1 keeps that fraction of every hospital's train and validation
+    patients (same test patients); save_global=True persists the final global model (task.load_global_params)."""
     if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg", "personalized"):
         raise ValueError(f"strategy must be one of 'fedavg', 'topology', 'fedprox', "
                          f"'fedmedian', 'fedtrimmedavg', 'personalized', got {strategy!r}")
@@ -249,7 +251,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     shuffle_perm = None
     agg_weights = None          # topo: weight vector, personalized: row-stochastic matrix (both static)
     fps_all = fps_train = None
-    if finetune_epochs:
+    if finetune_epochs or save_global:
         cfg["save_global"] = True
     if strategy in ("topology", "personalized") or save_assignment:
         # fingerprints of every hospital, from ALL rows (v1 / topo) and from TRAIN rows only (v3)
@@ -294,7 +296,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
         print(f"{tag} | strategy=topology (mode={topo_mode}, T={topo_temperature}) | "
               f"fingerprints computed for {n_clients} hospitals")
     write_run_config(cfg)
-    sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
+    sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history,
+                                   train_frac=train_frac)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")
     n_triples = []
     for c in range(n_clients):
@@ -458,7 +461,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "records": _slim_records(records),
             "assignment": ({int(c): sorted(map(str, assign.index[assign == c])) for c in range(n_clients)}
                            if save_assignment else None),
-            "assignment_sizes": sizes,
+            "assignment_sizes": sizes, "train_frac": train_frac,
             "wall_seconds": round(time.time() - t_start, 1), "provenance": _provenance()}
 
 
@@ -470,7 +473,7 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
                   topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
                   personalized_T: float | None = None, personalized_shuffle: bool = False,
-                  save_assignment: bool = False):
+                  save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
     pass label_dirichlet / specimen_baseline for the non-IID settings).
@@ -498,7 +501,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                compute_local=compute_local, finetune_epochs=finetune_epochs,
                                personalized_T=personalized_T,
                                personalized_shuffle=personalized_shuffle,
-                               save_assignment=save_assignment))
+                               save_assignment=save_assignment, train_frac=train_frac,
+                               save_global=save_global))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN

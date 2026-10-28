@@ -193,3 +193,93 @@ def weights_report(res: dict) -> str:
             else:
                 out.append(f"{NAMES[a]} seed {s}: weights {np.round(w, 3).tolist()}")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------- notebook 18: low-data curve + new hospital
+def _stat(d: np.ndarray) -> dict:
+    """Paired summary of per-seed differences ``d``: mean, 95% t-interval, two-sided p, #seeds > 0."""
+    from scipy import stats
+    d = np.asarray(d, dtype=float)
+    n = len(d)
+    m = float(np.mean(d))
+    sd = float(np.std(d, ddof=1)) if n > 1 else float("nan")
+    se = sd / np.sqrt(n) if n > 1 else float("nan")
+    t = float(stats.t.ppf(0.975, n - 1)) if n > 1 else float("nan")
+    p = float(stats.ttest_1samp(d, 0).pvalue) if n > 1 and sd > 0 else float("nan")
+    return {"mean": m, "lo": m - t * se, "hi": m + t * se, "p": p, "n_pos": int((d > 0).sum()), "n": n}
+
+
+def _fmt_stat(label: str, st: dict, per_seed=None) -> str:
+    tail = f"  {np.round(per_seed, 4)}" if per_seed is not None else ""
+    return (f"  {label:<28}{st['mean']:+.4f}  95% CI [{st['lo']:+.4f}, {st['hi']:+.4f}]  p={st['p']:.2f}  "
+            f"{st['n_pos']}/{st['n']} seeds > 0{tail}")
+
+
+def scarcity_values(res: dict, key: str) -> dict:
+    """Per-seed values at one data level. PRIMARY = UNWEIGHTED mean over hospitals of each hospital's test
+    F1 (every hospital at its own validation-chosen cutoff); also the size-weighted version."""
+    runs = res[key]["runs"]
+    pc = lambda arr: np.array([np.nan if v is None else v for v in arr], dtype=float)
+    local = [pc(r["val_local_per_client"]) for r in runs]
+    fed = [pc(r["phc_per_client"]) for r in runs]
+    ft = [pc(r["finetune"]["per_client"]) for r in runs]
+    w = [np.array([t["test"] for t in r["n_triples"]], dtype=float) for r in runs]
+    mean = lambda L: np.array([np.nanmean(x) for x in L])
+    wmean = lambda L: np.array([np.nansum(x * ww) / ww[~np.isnan(x)].sum() for x, ww in zip(L, w)])
+    return {"local": mean(local), "fedavg": mean(fed), "fedavg_ft": mean(ft),
+            "local_w": wmean(local), "fedavg_w": wmean(fed), "fedavg_ft_w": wmean(ft),
+            "n_hospitals": len(local[0]),
+            "mean_train_triples": float(np.mean([np.mean([t["train"] for t in r["n_triples"]]) for r in runs]))}
+
+
+def scarcity_report(res: dict) -> str:
+    keys = sorted((k for k in res if k.startswith("scarcity_f")), key=lambda k: -float(k[len("scarcity_f"):]))
+    if not keys:
+        return "no scarcity results yet"
+    lines = [f"{'kept':<7}{'train rows/hosp':<17}{'local-only':<20}{'FedAvg':<20}{'FedAvg+fine-tune':<20}"
+             f"(primary: unweighted mean over hospitals, test F1 at own cutoff)"]
+    for k in keys:
+        v = scarcity_values(res, k)
+        lines.append(f"{float(k[len('scarcity_f'):]):<7g}{v['mean_train_triples']:<17.0f}{ms(v['local']):<20}"
+                     f"{ms(v['fedavg']):<20}{ms(v['fedavg_ft']):<20}")
+    lines.append("\npaired by seed (primary metric):")
+    for k in keys:
+        v = scarcity_values(res, k)
+        f = float(k[len("scarcity_f"):])
+        lines.append(f" data kept = {f:g}")
+        for a, b, name in (("fedavg", "local", "FedAvg - local-only"), ("fedavg_ft", "local", "FedAvg+fine-tune - local-only"),
+                           ("fedavg_ft", "fedavg", "FedAvg+fine-tune - FedAvg")):
+            d = v[a] - v[b]
+            lines.append(_fmt_stat(name, _stat(d), d))
+    lines.append("\nsame comparisons, size-weighted over hospitals:")
+    for k in keys:
+        v = scarcity_values(res, k)
+        f = float(k[len("scarcity_f"):])
+        lines.append(f" data kept = {f:g}: " + " | ".join(
+            f"{name} {np.mean(v[a + '_w'] - v[b + '_w']):+.4f}"
+            for a, b, name in (("fedavg", "local", "FedAvg-local"), ("fedavg_ft", "local", "FT-local"))))
+    return "\n".join(lines)
+
+
+def newsite_report(res: dict) -> str:
+    out = []
+    for rule in ("median", "smallest"):
+        key = f"newsite_{rule}"
+        if key not in res:
+            continue
+        runs = res[key]["runs"]
+        ks = list(runs[0]["ks"])
+        out.append(f"--- held-out hospital = {rule} (sizes by seed: {[r['holdout_patients'] for r in runs]} patients) ---")
+        out.append(f"{'labelled patients':<19}{'zero-shot':<20}{'fed + fine-tune':<20}{'scratch (local)':<20}")
+        for k in ks:
+            col = lambda m: np.array([r["ks"][k][m]["f1"] for r in runs])
+            n = np.mean([r["ks"][k]["n_train_patients"] for r in runs])
+            out.append(f"{k + ' (~' + format(n, '.0f') + ')':<19}{ms(col('zero_shot')):<20}{ms(col('finetune')):<20}{ms(col('scratch')):<20}")
+        out.append("paired by seed:")
+        for k in ks:
+            col = lambda m: np.array([r["ks"][k][m]["f1"] for r in runs])
+            for a, b, name in (("finetune", "scratch", "fine-tune - scratch"), ("zero_shot", "scratch", "zero-shot - scratch")):
+                d = col(a) - col(b)
+                out.append(_fmt_stat(f"k={k}: {name}", _stat(d), d))
+        out.append("")
+    return "\n".join(out) if out else "no new-hospital results yet"
