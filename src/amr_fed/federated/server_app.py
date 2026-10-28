@@ -15,7 +15,7 @@ from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
 
 from .selection import grid_record
-from .strategy import TopologyAwareStrategy
+from .strategy import PersonalizedStrategy, SavingFedAvg, TopologyAwareStrategy
 from .task import (
     append_fed_metric, get_weights, init_model_on, load_client_graph, read_run_config,
     seed_everything,
@@ -78,6 +78,8 @@ def server_fn(context: Context):
             mode=cfg.get("topo_mode", "distinctiveness"),
             **common,
         )
+    elif strategy_name == "personalized":
+        strategy = PersonalizedStrategy(W=cfg["personal_W"], **common)
     elif strategy_name == "fedmedian":
         from flwr.server.strategy import FedMedian
         strategy = FedMedian(**common)
@@ -95,7 +97,8 @@ def server_fn(context: Context):
             common["on_fit_config_fn"] = lambda rnd: {"proximal_mu": mu, "round": rnd}
             strategy = FedAvg(**common)
     else:
-        strategy = FedAvg(**common)
+        # save_global: also persist the global model each round (FedAvg + fine-tune baseline)
+        strategy = SavingFedAvg(**common) if cfg.get("save_global") else FedAvg(**common)
     return ServerAppComponents(strategy=strategy, config=ServerConfig(num_rounds=cfg["rounds"]))
 
 

@@ -18,12 +18,13 @@ import json
 from typing import Union
 
 import numpy as np
-from flwr.common import FitRes, Parameters, Scalar, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.common import (EvaluateIns, FitIns, FitRes, Parameters, Scalar, ndarrays_to_parameters,
+                         parameters_to_ndarrays)
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
 
 from ..topology import FEATURE_NAMES, TopologyFingerprint, aggregation_weights
-from .task import FIT_METRIC_KEY
+from .task import FIT_METRIC_KEY, save_global_params
 
 
 def decode_fingerprint(raw) -> np.ndarray | None:
@@ -134,3 +135,72 @@ class TopologyAwareStrategy(FedAvg):
         metrics["topology_mode"] = used
         metrics["temperature"] = float(self.temperature)
         return parameters, metrics
+
+
+class SavingFedAvg(FedAvg):
+    """Plain FedAvg that also writes the aggregated global model to disk every round, so the driver
+    can fine-tune the final model at each hospital (the "FedAvg + fine-tune" baseline). Aggregation
+    itself is untouched, so results equal ``FedAvg``."""
+
+    def aggregate_fit(self, server_round, results, failures):
+        parameters, metrics = super().aggregate_fit(server_round, results, failures)
+        if parameters is not None:
+            save_global_params(parameters_to_ndarrays(parameters))
+        return parameters, metrics
+
+
+class PersonalizedStrategy(FedAvg):
+    """Topo v3: every hospital gets its OWN model each round.
+
+    After local training, hospital i's model is ``sum_j W[i, j] * theta_j`` (theta_j = hospital j's
+    trained weights); the next round's training starts from that personalized model, and evaluation
+    scores each hospital on its own model. ``W`` is row-stochastic (see
+    ``topology.personalized_weights``): the diagonal is largest, and hospitals with similar
+    fingerprints get more weight. Hospitals are identified by the ``cid`` each client reports in its
+    fit metrics, because Flower's own client ids are not the partition ids.
+    """
+
+    def __init__(self, W, **kwargs):
+        super().__init__(**kwargs)
+        self.W = np.asarray(W, dtype=np.float64)
+        self.personal: dict[int, list[np.ndarray]] = {}   # partition cid -> personalized weights
+        self.proxy2cid: dict[str, int] = {}               # flwr proxy id -> partition cid
+
+    def configure_fit(self, server_round, parameters, client_manager):
+        base = super().configure_fit(server_round, parameters, client_manager)
+        if not self.personal:                              # round 1: everyone starts from the same init
+            return base
+        out = []
+        for proxy, ins in base:
+            cid = self.proxy2cid.get(proxy.cid)
+            if cid in self.personal:
+                ins = FitIns(ndarrays_to_parameters(self.personal[cid]), ins.config)
+            out.append((proxy, ins))
+        return out
+
+    def aggregate_fit(self, server_round, results, failures):
+        if not results:
+            return None, {}
+        trained: dict[int, list[np.ndarray]] = {}
+        for proxy, fit_res in results:
+            cid = int(fit_res.metrics["cid"])
+            self.proxy2cid[proxy.cid] = cid
+            trained[cid] = parameters_to_ndarrays(fit_res.parameters)
+        n = self.W.shape[0]
+        if sorted(trained) != list(range(n)):
+            raise RuntimeError(f"personalized aggregation needs all {n} hospitals, got {sorted(trained)}")
+        ordered = [trained[j] for j in range(n)]
+        for i in range(n):
+            self.personal[i] = weighted_average(ordered, self.W[i])
+        mean = weighted_average(ordered, np.full(n, 1.0 / n))   # placeholder "global" model (unused for scoring)
+        return ndarrays_to_parameters(mean), {"topology_mode": "personalized"}
+
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        base = super().configure_evaluate(server_round, parameters, client_manager)
+        out = []
+        for proxy, ins in base:
+            cid = self.proxy2cid.get(proxy.cid)
+            if cid in self.personal:
+                ins = EvaluateIns(ndarrays_to_parameters(self.personal[cid]), ins.config)
+            out.append((proxy, ins))
+        return out

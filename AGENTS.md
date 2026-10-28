@@ -80,8 +80,8 @@ export ARMD_DIR="/path/to/your/ARMD"   # persist in ~/.zshrc
 | Louvain per-hospital / 10-hospital six-method comparison | `notebooks/11`, `12` (Colab GPU) |
 | Raw committed run log | `res.txt` (572 lines, Colab output) |
 
-Tests: 7 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
-`test_val_selection` (torch-free; round/cutoff selection), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
+Tests: 9 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
+`test_val_selection` + `test_final_protocol` + `test_final_analysis` (torch-free; round/cutoff selection, per-hospital cutoffs, v3 weights, analysis), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
 (needs flwr). All green as of `d05b736` (federated pair green on Colab, skip locally).
 
 ## Architecture (data flow)
@@ -144,6 +144,8 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 | 08 | antibiogram_comparison | pre-registered experiment #1 (done, null result); cells D1–D3 are SIGFPE forensics |
 | 11 | louvain_per_hospital | Louvain re-run, every per-hospital number (source of truth for the Louvain doc) |
 | 14 | louvain_val_selection | Louvain, six arms, **validation-selected protocol** (round + cutoff chosen on val, test read once); Colab or local; writes `results/amr_louvain_val.json` |
+| 16 | louvain_final | **FINAL protocol** on Louvain (3 hospitals): per-hospital cutoffs, FedAvg + fine-tune, topo v3 (3 temperatures + shuffled control), plus Uniform / Topo v1 / FedProx / FedMedian (9 federated runs per seed); writes `results/amr_louvain_final_<TAG>.json` |
+| 17 | org10_final | **FINAL protocol** on `organism_community` n=10, same 9 arms; `RUN_ARMS`/`TAG` split work across accounts, cell 9 merges; writes `results/amr_org10_final_<TAG>.json` |
 | 15 | org10_val_controls | `organism_community` n=10, **validation-selected protocol**, 8 arms: the six from nb12 plus two topology controls — `topo_shuffled` (each hospital gets another's fingerprint) and `invsize` (weights ∝ 1/n_train); `RUN_ARMS`/`TAG` split work across accounts, cell 8 merges; writes `results/amr_org10_val_<TAG>.json` |
 | 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (run 2026-10-25; topo arm on Mac CPU, rest on Colab) |
 
@@ -196,7 +198,20 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
   Local-only is scored every `local_epochs` epochs with the same rule (per hospital). Reported keys:
   `val_fed`, `val_fed_at05`, `val_fed_final`, `val_worst_fed`, `val_fed_auroc`, `val_local`, ...
   Quote these, plus final-round and AUROC; do not quote `fedavg_best` alone.
-- Only per-hospital F1 values at the cutoff grid travel to the server (no logits, no patient data).
+- **Final protocol (`phc_*` keys, notebooks 16/17, pre-registered in
+  `docs/2026-10-28-final-protocol-preregistration.md`):** same as above, but every hospital picks its
+  **own cutoff** on its own validation rows (`selection.select_federated_phc`) — what local-only always did.
+  Primary metric `phc_f1`; also `phc_worst`, `val_fed` (shared cutoff), `ft_f1` (FedAvg + 8-epoch
+  per-hospital fine-tune), `phc_val_score` (used to pick v3's temperature). Local-only is trained once per
+  seed, in the FedAvg arm (`compute_local=False` elsewhere). Results store confusion counts per cutoff and
+  probability histograms (`records`, `local_detail`), weights, fingerprints (all rows and train rows),
+  assignments and provenance, so nothing needs retraining. Analysis lives in `federated/analysis.py`,
+  the arm list / run loop in `federated/final_protocol.py`.
+- **Topo v3 (`strategy="personalized"`, `strategy.PersonalizedStrategy`, `topology.personalized_weights`):**
+  every hospital gets its own model, a similarity-weighted average of all hospitals' trained models
+  (`W[i,j] = softmax_j(-D[i,j]/T)`, fingerprints from train rows, size features dropped). T=inf equals Uniform
+  exactly (verified), T→0 is local training.
+- Only per-hospital counts at the cutoff grid travel to the server (no logits, no patient data).
 
 ## Conventions & constraints
 

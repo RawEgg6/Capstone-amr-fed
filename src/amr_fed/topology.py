@@ -290,6 +290,59 @@ def aggregation_weights(fingerprints, temperature: float = 1.0,
     return _softmax(logits)
 
 
+# Features that mostly encode hospital SIZE; v3's similarity leaves them out so that "similar" does
+# not just mean "same size" (the original weights included log_patients).
+SIZE_FEATURES: tuple[str, ...] = ("log_patients", "log_tested_edges")
+
+
+def train_frame(sub: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """The training rows of one hospital's frame, using the SAME patient-grouped split that
+    ``graph_build.build_arrays`` applies to that frame. Fingerprints from these rows never see the
+    validation or test patients (the original fingerprints used every row)."""
+    from .graph_build import _patient_grouped_split
+    code = _patient_grouped_split(sub[PK].to_numpy(), seed)
+    split = sub[PK].map(code).to_numpy()
+    return sub[split == 0]
+
+
+def personalized_weights(fingerprints, temperature: float = 1.0,
+                         exclude: Sequence[str] = DEFAULT_EXCLUDE + SIZE_FEATURES,
+                         cv_floor: float = 0.01) -> np.ndarray:
+    """Row-stochastic (n, n) matrix W for personalized aggregation ("topo v3").
+
+    Hospital i's own model is ``sum_j W[i, j] * (hospital j's locally trained model)``. Pipeline:
+    drop excluded / near-constant feature columns -> z-score across hospitals -> pairwise Euclidean
+    distance D (D[i, i] = 0) -> divide by the mean off-diagonal distance, so the temperature has the
+    same meaning on every split -> ``W[i] = softmax(-D[i] / T)``.
+
+    The diagonal is therefore the largest entry of each row: T -> 0 gives the identity (every hospital
+    keeps its own model = local training), T = inf gives uniform 1/n (everyone shares one average)."""
+    if isinstance(fingerprints, np.ndarray):
+        mat, names = np.asarray(fingerprints, dtype=np.float64), None
+    else:
+        fps = list(fingerprints)
+        mat, names = fingerprint_matrix(fps), list(fps[0].names)
+    n = mat.shape[0]
+    if n == 1:
+        return np.ones((1, 1))
+    if temperature is None or np.isinf(temperature):
+        return np.full((n, n), 1.0 / n)
+    if temperature <= 0:
+        raise ValueError(f"temperature must be > 0 (or inf), got {temperature}")
+    try:
+        kept, _ = select_features(mat, names, exclude=exclude, cv_floor=cv_floor)
+    except ValueError:
+        return np.full((n, n), 1.0 / n)             # indistinguishable hospitals
+    z = zscore(kept)
+    d = np.linalg.norm(z[:, None, :] - z[None, :, :], axis=2)
+    off = d[~np.eye(n, dtype=bool)]
+    scale = float(off.mean())
+    if scale <= 1e-12:
+        return np.full((n, n), 1.0 / n)
+    d = d / scale
+    return np.vstack([_softmax(-d[i] / temperature) for i in range(n)])
+
+
 def derangement(n: int, seed: int = 0) -> list[int]:
     """Seeded permutation of range(n) with no fixed point (needs n >= 2).
 

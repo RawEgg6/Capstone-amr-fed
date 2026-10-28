@@ -25,7 +25,7 @@ from ..data_loader import PK
 from ..graph_build import build_arrays, to_hetero_data
 from ..model import AMRSAGE
 from ..train_local import _auroc, _macro_f1
-from .selection import THRESHOLDS, macro_f1_grid
+from .selection import THRESHOLDS, confusion_counts, macro_f1_grid, prob_hist
 
 # Canonical core edge types — exactly what to_hetero_data emits for the 3 core edges
 # (including reverse edges). Pinned so every client's model has identical submodules.
@@ -66,6 +66,21 @@ def append_fed_metric(macro_f1: float, per_client: dict | None = None,
         rec.update(extra)
     with open(FED_HISTORY, "a") as f:
         f.write(json.dumps(rec) + "\n")
+
+
+GLOBAL_PARAMS = CLIENTS_DIR / "global_final.npz"
+
+
+def save_global_params(weights) -> None:
+    """Persist the server's latest global model (overwritten every round) so the driver can
+    fine-tune it per hospital after the simulation ends."""
+    CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez(GLOBAL_PARAMS, *weights)
+
+
+def load_global_params() -> list[np.ndarray]:
+    z = np.load(GLOBAL_PARAMS)
+    return [z[f"arr_{i}"] for i in range(len(z.files))]
 
 
 def read_fed_history() -> list[float]:
@@ -280,21 +295,29 @@ def local_eval_full(model, data) -> dict:
         out[f"n_{name}"] = n
         if n == 0:
             out[f"{name}_grid"] = [float("nan")] * len(THRESHOLDS)
+            out[f"{name}_cm"] = [[0, 0, 0, 0]] * len(THRESHOLDS)
+            out[f"{name}_hist"] = [[0] * 20, [0] * 20]
+            out[f"{name}_auroc"] = float("nan")
             if name == "test":
                 out["macro_f1"], out["auroc"] = 0.0, float("nan")
             continue
         logits = model(data.x_dict, data.edge_index_dict, tri[:, mask],
                        tf[mask] if tf is not None else None)
         p = torch.sigmoid(logits).double().cpu().numpy()
-        out[f"{name}_grid"] = macro_f1_grid(y[mask].cpu().numpy(), p).tolist()
+        yn = y[mask].cpu().numpy()
+        out[f"{name}_grid"] = macro_f1_grid(yn, p).tolist()
+        # raw detail for later analysis: confusion counts at every cutoff + probability histograms
+        out[f"{name}_cm"] = confusion_counts(yn, p).tolist()
+        out[f"{name}_hist"] = prob_hist(yn, p)
+        out[f"{name}_auroc"] = _auroc(y[mask], logits)
         if name == "test":
-            out["macro_f1"], out["auroc"] = _macro_f1(y[mask], logits), _auroc(y[mask], logits)
+            out["macro_f1"], out["auroc"] = _macro_f1(y[mask], logits), out["test_auroc"]
     free_gpu()
     return out
 
 
 def local_train_tracked(model, data, epochs: int, eval_every: int, lr: float = 1e-3,
-                        weight_decay: float = 1e-4) -> list[dict]:
+                        weight_decay: float = 1e-4, eval_at_start: bool = False) -> list[dict]:
     """`local_train` (same optimiser, same one-full-batch-step-per-epoch loop) that also scores
     the model on val+test every `eval_every` epochs and at the last epoch. Evaluation runs in
     eval() mode under no_grad, so it consumes no RNG and leaves training bit-identical to
@@ -309,6 +332,8 @@ def local_train_tracked(model, data, epochs: int, eval_every: int, lr: float = 1
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=data.train_pos_weight.to(DEVICE))
     ckpts = sorted(set(range(eval_every, epochs + 1, eval_every)) | {epochs})
     history = []
+    if eval_at_start:   # epoch 0 = the model as handed in (used by the fine-tune baseline)
+        history.append({"epoch": 0, **local_eval_full(model, data)})
     model.train()
     for e in range(1, epochs + 1):
         opt.zero_grad()
