@@ -196,6 +196,7 @@ class PersonalizedStrategy(FedAvg):
         ordered = [trained[j] for j in range(n)]
         for i in range(n):
             self.personal[i] = weighted_average(ordered, self.W[i])
+            save_personal_params(i, self.personal[i])           # the driver fine-tunes from these
         mean = weighted_average(ordered, np.full(n, 1.0 / n))   # placeholder "global" model (unused for scoring)
         return ndarrays_to_parameters(mean), {"topology_mode": "personalized"}
 

@@ -198,7 +198,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
                personalized_T: float | None = None, personalized_shuffle: bool = False,
                save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False,
-               simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False):
+               simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False,
+               personalized_fp: str = "topology", personalized_group_of=None):
     """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
     Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
     dispatched by keyword match on its signature (see partition._call_partition): n_clients
@@ -226,7 +227,11 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     patients (same test patients); save_global=True persists the final global model (task.load_global_params).
     strategy="simft": personalized aggregation weighted by function-space similarity (simft.py); validation is split
     into halves (A scores other hospitals' models, B selects round / cutoff / epoch); finetune_epochs then
-    fine-tunes each hospital's own final personalized model. simft_flat=True is the equal-neighbour ablation."""
+    fine-tunes each hospital's own final personalized model. simft_flat=True is the equal-neighbour ablation.
+    personalized_fp picks what v3's similarity is built from: "topology" (the v0 graph fingerprint, default),
+    "antibiogram" (label_fingerprints.cross_antibiogram_loss on train rows) or "oracle" (equal weights within the
+    known group: personalized_group_of(raw partition label) -> group id; an upper bound for any clustering).
+    finetune_epochs also works for strategy="personalized": each hospital fine-tunes its own final model."""
     if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg", "personalized", "simft"):
         raise ValueError(f"strategy must be one of 'fedavg', 'topology', 'fedprox', "
                          f"'fedmedian', 'fedtrimmedavg', 'personalized', 'simft', got {strategy!r}")
@@ -234,8 +239,12 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
         raise ValueError("strategy='personalized' needs personalized_T")
     if personalized_shuffle and strategy != "personalized":
         raise ValueError("personalized_shuffle=True only applies to strategy='personalized'")
-    if finetune_epochs and strategy not in ("fedavg", "simft"):
-        raise ValueError("finetune_epochs only applies to strategy='fedavg' or 'simft'")
+    if finetune_epochs and strategy not in ("fedavg", "simft", "personalized"):
+        raise ValueError("finetune_epochs only applies to strategy='fedavg', 'simft' or 'personalized'")
+    if personalized_fp not in ("topology", "antibiogram", "oracle"):
+        raise ValueError(f"personalized_fp must be 'topology', 'antibiogram' or 'oracle', got {personalized_fp!r}")
+    if personalized_fp == "oracle" and personalized_group_of is None:
+        raise ValueError("personalized_fp='oracle' needs personalized_group_of")
     if topo_shuffle and strategy != "topology":
         raise ValueError("topo_shuffle=True only applies to strategy='topology'")
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
@@ -247,7 +256,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     raw = (dirichlet_ward_mixture(df, n_clients=n_clients, alpha=alpha, seed=seed)
            if partition_fn is None
            else _call_partition(partition_fn, df, n_clients=n_clients, seed=seed))  # n_clients injected only when the split declares it (see partition._call_partition)
-    codes, _ = pd.factorize(raw)                 # str/int client labels -> 0..k-1
+    codes, uniques = pd.factorize(raw)           # str/int client labels -> 0..k-1 (uniques[code] = raw label)
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
     tag = label or f"alpha={alpha}"
@@ -278,8 +287,17 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             shuffle_perm = derangement(n_clients, seed)
             order = shuffle_perm
             print(f"{tag} | SHUFFLED v3 fingerprints: hospital c receives hospital perm[c]'s -> {shuffle_perm}")
-        fps = [TopologyFingerprint(np.asarray(fps_train[str(o)])) for o in order]
-        W = personalized_weights(fps, temperature=float(personalized_T))
+        if personalized_fp == "topology":
+            fps = [TopologyFingerprint(np.asarray(fps_train[str(o)])) for o in order]
+            W = personalized_weights(fps, temperature=float(personalized_T))
+        elif personalized_fp == "antibiogram":
+            from ..label_fingerprints import cross_antibiogram_loss, weights_from_dissimilarity
+            D = cross_antibiogram_loss([train_frame(df[df[PK].map(assign) == c], seed) for c in range(n_clients)])
+            W = weights_from_dissimilarity(D[np.ix_(order, order)], temperature=float(personalized_T))
+        else:   # oracle: equal weight on every hospital of the same (known) group
+            groups = np.array([personalized_group_of(uniques[o]) for o in order])
+            same = (groups[:, None] == groups[None, :]).astype(float)
+            W = same / same.sum(axis=1, keepdims=True)
         cfg["personal_W"] = W.tolist()
         agg_weights = W.tolist()
         print(f"{tag} | strategy=personalized (T={personalized_T}, shuffle={personalized_shuffle}) | "
@@ -391,12 +409,12 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     if finetune_epochs:
         # FedAvg + fine-tune: start every hospital from the FINAL global model, train a few local
         # epochs, and pick (epoch incl. 0, own cutoff) on that hospital's validation rows.
-        gp = None if strategy == "simft" else load_global_params()
+        gp = None if strategy in ("simft", "personalized") else load_global_params()
         ft_f1, ft_aucs, ft_thr, ft_ep, ft_detail = [], [], [], [], []
         for c in range(n_clients):
             data = load_client_graph(c)
             model = init_model_on(data, cfg)
-            set_weights(model, load_personal_params(c) if strategy == "simft" else gp)
+            set_weights(model, load_personal_params(c) if gp is None else gp)
             hist = local_train_tracked(model, data, finetune_epochs, eval_every=2, eval_at_start=True,
                                        val_half=val_half)
             sel = select_local([h["val_grid"] for h in hist], [h["test_grid"] for h in hist])
@@ -469,6 +487,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "phc_final": phc and phc["final_f1"], "phc_auroc": phc and phc["auroc"],
             "finetune": ft, "ft_f1": ft and round(ft["f1"], 4), "ft_worst": ft and ft["worst"],
             "personalized_T": personalized_T, "personalized_shuffle": personalized_shuffle,
+            "personalized_fp": personalized_fp if strategy == "personalized" else None,
             "simft": cfg.get("simft"), "simft_rounds": read_simft_rounds() if strategy == "simft" else None,
             "agg_weights": agg_weights, "fingerprints_all": fps_all, "fingerprints_train": fps_train,
             "n_triples": n_triples, "local_detail": lo.get("detail"),
@@ -488,7 +507,8 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
                   personalized_T: float | None = None, personalized_shuffle: bool = False,
                   save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False,
-                  simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False):
+                  simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False,
+                  personalized_fp: str = "topology", personalized_group_of=None):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
     pass label_dirichlet / specimen_baseline for the non-IID settings).
@@ -518,7 +538,9 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                personalized_shuffle=personalized_shuffle,
                                save_assignment=save_assignment, train_frac=train_frac,
                                save_global=save_global, simft_tau=simft_tau,
-                               simft_self_floor=simft_self_floor, simft_flat=simft_flat))
+                               simft_self_floor=simft_self_floor, simft_flat=simft_flat,
+                               personalized_fp=personalized_fp,
+                               personalized_group_of=personalized_group_of))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN

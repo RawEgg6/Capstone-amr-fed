@@ -80,8 +80,8 @@ export ARMD_DIR="/path/to/your/ARMD"   # persist in ~/.zshrc
 | Louvain per-hospital / 10-hospital six-method comparison | `notebooks/11`, `12` (Colab GPU) |
 | Raw committed run log | `res.txt` (572 lines, Colab output) |
 
-Tests: 11 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
-`test_val_selection` + `test_final_protocol` + `test_final_analysis` + `test_regimes` + `test_simft` (torch-free; round/cutoff selection, per-hospital cutoffs, v3 weights, analysis, data regimes), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
+Tests: 12 files — `test_data_loader`, `test_graph_build`, `test_partition` (32 tests),
+`test_val_selection` + `test_final_protocol` + `test_final_analysis` + `test_regimes` + `test_simft` + `test_label_fingerprints` (torch-free; round/cutoff selection, per-hospital cutoffs, v3 weights, analysis, data regimes, label fingerprints, era split, budget slicing), `test_topology` (17), `test_topology_strategy` (needs torch), `test_federated_seeding`
 (needs flwr). All green as of `d05b736` (federated pair green on Colab, skip locally).
 
 ## Architecture (data flow)
@@ -97,6 +97,9 @@ ARMD CSVs (Drive, never committed)
   → partition.py      1:1 patient→hospital assignment (11 split fns; pure pandas, no torch)
   → topology.py       14-feature hospital fingerprint → z-score → distance-to-centroid
                       → softmax aggregation weights (consensus | distinctiveness, T dial)
+  → label_fingerprints.py  label-based fingerprints (antibiogram, cross-antibiogram loss, case mix) +
+                      scoring against SimFT's measured transfer gaps (offline, no training)
+  → split_diagnostics.py   how much hospitals of a split differ in P(y|x) vs a random split (pre-training screen)
   → federated/        run.py (run_local_only/run_pooled/run_fedavg/run_multiseed/headroom_gate)
                       task.py (graphs via disk, seeding, init/train/eval) · client_app.py ·
                       server_app.py · strategy.py (TopologyAwareStrategy extends FedAvg)
@@ -106,7 +109,8 @@ ARMD CSVs (Drive, never committed)
 
 **Splits in `partition.py`:** `dirichlet_ward_mixture`, `label_dirichlet`, `specimen_baseline`,
 `organism_community`, `ward_baseline`, `adi_baseline`, `homophily_split`, `degree_skew_split`,
-`topology_split` (2-D corners), `louvain_split`, `antibiogram_conflict` (pre-registered).
+`topology_split` (2-D corners), `louvain_split`, `antibiogram_conflict` (pre-registered),
+`era_cluster_split` (groups of hospitals from different time eras: the one natural concept shift in ARMD; 2026-10-29).
 Contract: `partition_fn(df, n_clients, seed) -> Series(index=patient → client id)`, 1:1, balanced.
 
 **Topology arm wiring:** driver computes fingerprints into `run_config.json` → client forwards
@@ -149,10 +153,14 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 | 19 | simft | **SimFT** (pre-registered in `docs/2026-10-28-simft-preregistration.md`): personalized aggregation weighted by function-space similarity (hospital i scores every hospital's model on its validation half A) + final fine-tune; settings: louvain (baselines nb16), org10 (nb17), ward10 at 10% data (nb18) — only the 3 SimFT arms are trained, baselines are read from those notebooks' files; writes `results/amr_simft_<setting>_<TAG>.json` |
 | 18 | low_data_and_new_site | **Where federation helps** (pre-registered in `docs/2026-10-28-low-data-and-new-site-preregistration.md`): ward-Dirichlet 10 hospitals; Part A low-data curve (keep 100/25/10/3% of train+val patients; local-only vs FedAvg vs FedAvg+fine-tune), Part B new hospital (hold one out; zero-shot / fine-tuned / scratch at k labelled patients); writes `results/amr_regimes_<TAG>.json` |
 | 15 | org10_val_controls | `organism_community` n=10, **validation-selected protocol**, 8 arms: the six from nb12 plus two topology controls — `topo_shuffled` (each hospital gets another's fingerprint) and `invsize` (weights ∝ 1/n_train); `RUN_ARMS`/`TAG` split work across accounts, cell 8 merges; writes `results/amr_org10_val_<TAG>.json` |
+| 21 | budget_and_era | **Pre-registered** in `docs/2026-10-29-budget-and-era-preregistration.md`. Part A: budget-matched FedAvg + fine-tune test (FedAvg 24 rounds, local-only 104 epochs; smaller budgets read out by `federated/budget.py`) on Louvain + org10. Part B: `era_cluster_split` (2 eras x 5 hospitals), every arm + fine-tune: FedAvg, v3 topology, v3 cross-antibiogram, its shuffled control, oracle (true groups), SimFT. Arms/reports in `federated/budget_runs.py`; writes `results/amr_budget_<setting>_<TAG>.json`, `results/amr_era10_<TAG>.json` |
 | 12 | ten_hospitals | `organism_community` n=10: FedAvg / FedProx / FedMedian / FedTrimmedAvg / uniform control / Topo (run 2026-10-25; topo arm on Mac CPU, rest on Colab) |
 
 ## Docs index (append-only history; wrong claims are deleted, not left in place)
 
+- **Latest analysis (2026-10-29, offline):** `docs/2026-10-29-label-heterogeneity-and-fingerprints.md` — fine-tune lead ≈ value of 8 extra
+  epochs; headline splits have ~no P(y|x) heterogeneity (1.08-1.10x random); time era is the natural concept shift; label fingerprints vs
+  measured transfer. Next run: notebook 21 (pre-registration `docs/2026-10-29-budget-and-era-preregistration.md`).
 - **Active results:** `docs/2026-10-23-louvain-topology-results.md` (rewritten 2026-10-24 from nb11),
   `docs/2026-10-18-topology-phase5-results.md`, `docs/2026-10-18-antibiogram-conflict-split.md`
   (pre-registration + null result), `research_outline.md` (paper outline; §G open questions, §J claim guardrails).
@@ -209,6 +217,9 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
   probability histograms (`records`, `local_detail`), weights, fingerprints (all rows and train rows),
   assignments and provenance, so nothing needs retraining. Analysis lives in `federated/analysis.py`,
   the arm list / run loop in `federated/final_protocol.py`.
+- **v3 options (2026-10-29):** `personalized_fp` = `"topology"` (default) | `"antibiogram"` (cross-antibiogram loss on train rows)
+  | `"oracle"` (equal weights within a known group, `personalized_group_of`); `finetune_epochs` now also works for `personalized`
+  (each hospital fine-tunes its own final model; `PersonalizedStrategy` saves personal params every round).
 - **Topo v3 (`strategy="personalized"`, `strategy.PersonalizedStrategy`, `topology.personalized_weights`):**
   every hospital gets its own model, a similarity-weighted average of all hospitals' trained models
   (`W[i,j] = softmax_j(-D[i,j]/T)`, fingerprints from train rows, size features dropped). T=inf equals Uniform

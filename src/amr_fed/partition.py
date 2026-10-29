@@ -481,6 +481,45 @@ def organism_community(df: pd.DataFrame, n_clients: int = 5,
     return home_org.map(org_to_client)
 
 
+def patient_era(df: pd.DataFrame, n_eras: int) -> pd.Series:
+    """Each patient's era: equal-patient-count bins of their FIRST culture time (0 = earliest).
+    Index=patient -> era id."""
+    t = pd.to_datetime(df[config.KEYS["time"]], utc=True, errors="coerce")
+    first = t.groupby(df[PK].to_numpy()).min()
+    return pd.Series(pd.qcut(first.rank(method="first"), n_eras, labels=False),
+                     index=first.index).astype(int)
+
+
+def era_cluster_split(df: pd.DataFrame, n_clients: int = 10, n_eras: int = 2,
+                      era_mix: float = 0.0, seed: int = config.SEED) -> pd.Series:
+    """Clustered concept-shift split: hospitals come in ``n_eras`` groups, each group's patients from
+    one era of the data (by first culture time), shuffled at random within the group.
+
+    Why: patient subsets of one institution share P(resistant | organism, antibiotic, history) almost
+    exactly (docs/2026-10-29-label-heterogeneity-and-fingerprints.md); time is the one natural axis in
+    ARMD along which it moves (testing panels and breakpoint editions change), and the model has no
+    time feature, so to it the eras are hospitals whose labs behave differently. Hospitals of the same
+    group are alike, different groups are not — the setting similarity-weighted / clustered FL is built
+    for. ``era_mix`` (0..1) sends that fraction of each era's patients to the OTHER groups' hospitals,
+    dialling the shift down (1 - 1/n_eras = no structure).
+
+    Hospital c belongs to group c // (n_clients // n_eras). Needs n_clients divisible by n_eras.
+    Deterministic in seed. Returns Series index=patient -> client id."""
+    if n_eras < 1 or n_clients % n_eras:
+        raise ValueError(f"n_clients ({n_clients}) must be a positive multiple of n_eras ({n_eras})")
+    if not 0.0 <= era_mix <= 1.0:
+        raise ValueError(f"era_mix must be in [0, 1], got {era_mix}")
+    era = patient_era(df, n_eras).sort_index()
+    per = n_clients // n_eras
+    rng = np.random.default_rng(seed)
+    own = era.to_numpy() * per + rng.integers(0, per, len(era))
+    if n_eras > 1 and era_mix > 0:
+        move = rng.random(len(era)) < era_mix
+        other = (era.to_numpy() + rng.integers(1, n_eras, len(era))) % n_eras
+        own = np.where(move, other * per + rng.integers(0, per, len(era)), own)
+    return pd.Series(own.astype(int), index=era.index, name="hospital")
+
+
 def ward_baseline(df: pd.DataFrame) -> pd.Series:
     """Baseline split: each home ward is its own hospital (patient -> ward)."""
     return assign_home_ward(df)
