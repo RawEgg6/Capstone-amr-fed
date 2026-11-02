@@ -160,7 +160,7 @@ tables without final-round, no "we beat centralized" headline, no citing unverif
 
 - **Latest analysis (2026-10-29, offline):** `docs/2026-10-29-label-heterogeneity-and-fingerprints.md` — fine-tune lead ≈ value of 8 extra
   epochs; headline splits have ~no P(y|x) heterogeneity (1.08-1.10x random); time era is the natural concept shift; label fingerprints vs
-  measured transfer. Next run: notebook 21 (pre-registration `docs/2026-10-29-budget-and-era-preregistration.md`).
+  measured transfer. Next run: notebook 21 (pre-registration `docs/2026-10-29-budget-and-era-preregistration.md`). Notebook 21 results (2026-11-02): fine-tune lead = training budget; oracle on the era split does not beat FedAvg + fine-tune. Next run: notebook 22 (`federated/shift_runs.py`, pre-registration `docs/2026-11-02-shift-test-preregistration.md`): injected concept shift (`shift10/25/50/100`) and different test panels (`panel50/20`); strongest shift first, stop if the oracle shows no headroom.
 - **Active results:** `docs/2026-10-23-louvain-topology-results.md` (rewritten 2026-10-24 from nb11),
   `docs/2026-10-18-topology-phase5-results.md`, `docs/2026-10-18-antibiogram-conflict-split.md`
   (pre-registration + null result), `research_outline.md` (paper outline; §G open questions, §J claim guardrails).
