@@ -10,6 +10,10 @@ so the comparison is fair. Run on Colab (needs torch + flwr[simulation]).
 """
 from __future__ import annotations
 
+import subprocess
+import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -17,11 +21,12 @@ from .. import config
 from ..data_loader import PK, load_cohort_frame
 from ..partition import _call_partition, dirichlet_ward_mixture
 from . import client_app, server_app
-from .selection import select_federated, select_local
+from .selection import select_federated, select_federated_phc, select_local
 from .task import (
-    DEVICE, build_and_save_clients, free_gpu, init_model_on, load_client_graph,
+    DEVICE, build_and_save_clients, free_gpu, init_model_on, load_client_graph, load_global_params,
     local_eval, local_train, local_train_tracked, read_fed_history, read_fed_records,
-    reset_fed_history, seed_everything, write_run_config,
+    load_personal_params, read_simft_rounds, reset_fed_history, reset_simft_files, seed_everything,
+    set_weights, write_run_config,
 )
 
 POOLED_REFERENCE = 0.71  # Phase-1 pooled macro-F1 with patient-history features (all data)
@@ -44,6 +49,36 @@ def _run_config(n_clients: int, rounds: int, local_epochs: int, hidden: int = 12
     # themselves deterministically (see task.seed_client / task.seed_everything).
     return {"n_clients": n_clients, "rounds": rounds, "local_epochs": local_epochs,
             "hidden": hidden, "layers": 2, "aggr": "mean", "seed": int(seed)}
+
+
+def _provenance() -> dict:
+    """Where/with what a result was produced (kept in every run's JSON)."""
+    info = {"device": DEVICE}
+    try:
+        import torch, flwr
+        info.update(torch=torch.__version__, flwr=flwr.__version__)
+        if torch.cuda.is_available():
+            info["gpu"] = torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    try:
+        root = Path(__file__).resolve().parents[3]
+        info["git"] = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                                     capture_output=True, text=True, timeout=10).stdout.strip() or None
+    except Exception:
+        info["git"] = None
+    return info
+
+
+_SLIM_KEYS = ("macro_f1", "auroc", "per_client", "per_client_auroc", "n_val", "n_test",
+              "per_client_val_cm", "per_client_test_cm", "per_client_val_hist", "per_client_test_hist",
+              "per_client_val_auroc")
+
+
+def _slim_records(records: list[dict]) -> list[dict]:
+    """Per-round history without the (derivable) F1 grids: the confusion counts are kept, and every
+    threshold metric can be recomputed from them (selection.macro_f1_from_counts)."""
+    return [{k: r[k] for k in _SLIM_KEYS if k in r} for r in records]
 
 
 def run_local_only(n_clients: int, cfg: dict, epochs: int = 60):
@@ -73,7 +108,7 @@ def run_local_only_tracked(n_clients: int, cfg: dict, epochs: int = 60, eval_eve
       val_*    -- per hospital: the (epoch, cutoff) with the best VALIDATION macro-F1, and the
                   TEST macro-F1 read there; size-weighted mean and worst hospital."""
     f1s, aucs, ns = [], [], []
-    v_f1, v_auc, v_thr, v_ep = [], [], [], []
+    v_f1, v_auc, v_thr, v_ep, detail = [], [], [], [], []
     for c in range(n_clients):
         data = load_client_graph(c)
         model = init_model_on(data, cfg)
@@ -88,13 +123,15 @@ def run_local_only_tracked(n_clients: int, cfg: dict, epochs: int = 60, eval_eve
         v_auc.append(round(auc, 4) if auc == auc else None)
         v_thr.append(sel["thr"])
         v_ep.append(hist[sel["ckpt"]]["epoch"])
+        detail.append([{k: h[k] for k in ("epoch", "n_val", "n_test", "val_cm", "test_cm", "val_hist",
+                                          "test_hist", "val_auroc", "test_auroc")} for h in hist])
         del model, data
         free_gpu()
     w = lambda v: float(np.average(v, weights=ns)) if sum(ns) else 0.0
     return {"f1s": f1s, "wavg": w(f1s), "aucs": aucs, "auroc": _wavg_finite(aucs, ns),
             "ns": ns, "val_f1s": v_f1, "val_wavg": w(v_f1), "val_worst": round(min(v_f1), 4),
             "val_aucs": v_auc, "val_auroc": _wavg_finite(v_auc, ns),
-            "val_thr": v_thr, "val_epoch": v_ep}
+            "val_thr": v_thr, "val_epoch": v_ep, "detail": detail}
 
 
 def run_pooled(n_clients: int, cfg: dict, epochs: int = 60):
@@ -157,7 +194,12 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                seed: int = config.SEED, patient_history: bool = True, df=None,
                partition_fn=None, label: str | None = None, compute_pooled: bool = True,
                hidden: int = 128, strategy: str = "fedavg",
-               topo_temperature: float = 1.0, topo_mode: str = "distinctiveness"):
+               topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
+               topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
+               personalized_T: float | None = None, personalized_shuffle: bool = False,
+               save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False,
+               simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False,
+               personalized_fp: str = "topology", personalized_group_of=None):
     """partition_fn(df, ...) -> patient->client Series lets us swap the split (ward-
     Dirichlet default, or label_dirichlet / specimen_baseline / topology_split). The fn is
     dispatched by keyword match on its signature (see partition._call_partition): n_clients
@@ -172,24 +214,94 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     Phase-6 federated baselines under the identical protocol (server_app.py picks the
     Flower strategy; FedProx additionally ships proximal_mu to clients — see
     task.local_train). Everything else — graphs, budgets, seeds, evaluation —
-    is identical, so the comparison is exactly apples-to-apples."""
-    if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg"):
+    is identical, so the comparison is exactly apples-to-apples.
+    Controls for the topology arm: topo_shuffle=True hands every hospital ANOTHER hospital's
+    fingerprint (seeded derangement) so the weights keep their spread but lose their meaning;
+    topo_mode="invsize" weights hospitals by 1/n_train and ignores fingerprints.
+    Final-protocol extras: strategy="personalized" is topo v3 (every hospital gets its own model; the
+    similarity temperature is personalized_T, personalized_shuffle hands each hospital another's
+    fingerprint); compute_local=False skips local-only (train it once per seed in the FedAvg arm);
+    finetune_epochs>0 (FedAvg only) also fine-tunes the final global model at every hospital;
+    save_assignment stores the patient->hospital map in the result.
+    Low-data experiments: train_frac < 1 keeps that fraction of every hospital's train and validation
+    patients (same test patients); save_global=True persists the final global model (task.load_global_params).
+    strategy="simft": personalized aggregation weighted by function-space similarity (simft.py); validation is split
+    into halves (A scores other hospitals' models, B selects round / cutoff / epoch); finetune_epochs then
+    fine-tunes each hospital's own final personalized model. simft_flat=True is the equal-neighbour ablation.
+    personalized_fp picks what v3's similarity is built from: "topology" (the v0 graph fingerprint, default),
+    "antibiogram" (label_fingerprints.cross_antibiogram_loss on train rows) or "oracle" (equal weights within the
+    known group: personalized_group_of(raw partition label) -> group id; an upper bound for any clustering).
+    finetune_epochs also works for strategy="personalized": each hospital fine-tunes its own final model."""
+    if strategy not in ("fedavg", "topology", "fedprox", "fedmedian", "fedtrimmedavg", "personalized", "simft"):
         raise ValueError(f"strategy must be one of 'fedavg', 'topology', 'fedprox', "
-                         f"'fedmedian', 'fedtrimmedavg', got {strategy!r}")
+                         f"'fedmedian', 'fedtrimmedavg', 'personalized', 'simft', got {strategy!r}")
+    if strategy == "personalized" and personalized_T is None:
+        raise ValueError("strategy='personalized' needs personalized_T")
+    if personalized_shuffle and strategy != "personalized":
+        raise ValueError("personalized_shuffle=True only applies to strategy='personalized'")
+    if finetune_epochs and strategy not in ("fedavg", "simft", "personalized"):
+        raise ValueError("finetune_epochs only applies to strategy='fedavg', 'simft' or 'personalized'")
+    if personalized_fp not in ("topology", "antibiogram", "oracle"):
+        raise ValueError(f"personalized_fp must be 'topology', 'antibiogram' or 'oracle', got {personalized_fp!r}")
+    if personalized_fp == "oracle" and personalized_group_of is None:
+        raise ValueError("personalized_fp='oracle' needs personalized_group_of")
+    if topo_shuffle and strategy != "topology":
+        raise ValueError("topo_shuffle=True only applies to strategy='topology'")
     local_only_epochs = rounds * local_epochs if local_only_epochs is None else local_only_epochs
     from flwr.simulation import run_simulation
+    t_start = time.time()
 
     seed_everything(seed)   # driver process (Ray client/server processes seed themselves)
     df = load_cohort_frame() if df is None else df
     raw = (dirichlet_ward_mixture(df, n_clients=n_clients, alpha=alpha, seed=seed)
            if partition_fn is None
            else _call_partition(partition_fn, df, n_clients=n_clients, seed=seed))  # n_clients injected only when the split declares it (see partition._call_partition)
-    codes, _ = pd.factorize(raw)                 # str/int client labels -> 0..k-1
+    codes, uniques = pd.factorize(raw)           # str/int client labels -> 0..k-1 (uniques[code] = raw label)
     assign = pd.Series(codes, index=raw.index)
     n_clients = int(assign.max()) + 1
     tag = label or f"alpha={alpha}"
     cfg = _run_config(n_clients, rounds, local_epochs, hidden=hidden, seed=seed)
     cfg["strategy"] = strategy
+    shuffle_perm = None
+    agg_weights = None          # topo: weight vector, personalized: row-stochastic matrix (both static)
+    fps_all = fps_train = None
+    if finetune_epochs or save_global:
+        cfg["save_global"] = True
+    val_half = None
+    if strategy == "simft":
+        cfg["simft"] = {"tau": float(simft_tau), "self_floor": float(simft_self_floor), "flat": bool(simft_flat)}
+        cfg["val_half"] = val_half = "B"      # half A scores other hospitals' models, half B selects
+        print(f"{tag} | strategy=simft (tau={simft_tau}, self_floor={simft_self_floor}, flat={simft_flat})")
+    if strategy in ("topology", "personalized") or save_assignment:
+        # fingerprints of every hospital, from ALL rows (v1 / topo) and from TRAIN rows only (v3)
+        from ..topology import compute_fingerprint, train_frame
+        fps_all, fps_train = {}, {}
+        for c in range(n_clients):
+            sub = df[df[PK].map(assign) == c]
+            fps_all[str(c)] = compute_fingerprint(sub).tolist()
+            fps_train[str(c)] = compute_fingerprint(train_frame(sub, seed)).tolist()
+    if strategy == "personalized":
+        from ..topology import TopologyFingerprint, derangement, personalized_weights
+        order = list(range(n_clients))
+        if personalized_shuffle:
+            shuffle_perm = derangement(n_clients, seed)
+            order = shuffle_perm
+            print(f"{tag} | SHUFFLED v3 fingerprints: hospital c receives hospital perm[c]'s -> {shuffle_perm}")
+        if personalized_fp == "topology":
+            fps = [TopologyFingerprint(np.asarray(fps_train[str(o)])) for o in order]
+            W = personalized_weights(fps, temperature=float(personalized_T))
+        elif personalized_fp == "antibiogram":
+            from ..label_fingerprints import cross_antibiogram_loss, weights_from_dissimilarity
+            D = cross_antibiogram_loss([train_frame(df[df[PK].map(assign) == c], seed) for c in range(n_clients)])
+            W = weights_from_dissimilarity(D[np.ix_(order, order)], temperature=float(personalized_T))
+        else:   # oracle: equal weight on every hospital of the same (known) group
+            groups = np.array([personalized_group_of(uniques[o]) for o in order])
+            same = (groups[:, None] == groups[None, :]).astype(float)
+            W = same / same.sum(axis=1, keepdims=True)
+        cfg["personal_W"] = W.tolist()
+        agg_weights = W.tolist()
+        print(f"{tag} | strategy=personalized (T={personalized_T}, shuffle={personalized_shuffle}) | "
+              f"self-weights {np.round(np.diag(W), 3).tolist()}")
     if strategy == "topology":
         # Phase 5: compute each hospital's fingerprint driver-side (the driver has the
         # frame + assignment; clients only see their saved graph) and hand it to the
@@ -198,25 +310,43 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
         from ..topology import compute_fingerprint
         cfg["topo_temperature"] = float(topo_temperature)
         cfg["topo_mode"] = topo_mode
-        fps = {}
-        for c in range(n_clients):
-            sub = df[df[PK].map(assign) == c]
-            fps[str(c)] = compute_fingerprint(sub).tolist()
+        fps = dict(fps_all)
+        if topo_shuffle:
+            from ..topology import derangement
+            shuffle_perm = derangement(n_clients, seed)
+            fps = {str(c): fps[str(shuffle_perm[c])] for c in range(n_clients)}
+            print(f"{tag} | SHUFFLED fingerprints: hospital c receives hospital perm[c]'s -> {shuffle_perm}")
         cfg["fingerprints"] = fps
+        if topo_mode != "invsize" and not (isinstance(topo_temperature, float) and np.isinf(topo_temperature)):
+            from ..topology import TopologyFingerprint, aggregation_weights
+            agg_weights = aggregation_weights([TopologyFingerprint(np.asarray(fps[str(c)])) for c in range(n_clients)],
+                                              temperature=float(topo_temperature), mode=topo_mode).tolist()
         print(f"{tag} | strategy=topology (mode={topo_mode}, T={topo_temperature}) | "
               f"fingerprints computed for {n_clients} hospitals")
     write_run_config(cfg)
-    sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history)
+    sizes = build_and_save_clients(df, assign, n_clients, seed=seed, patient_history=patient_history,
+                                   train_frac=train_frac)
     print(f"{tag} | {n_clients} hospitals | patients each: {sizes}")
+    n_triples = []
+    for c in range(n_clients):
+        g = load_client_graph(c)
+        n_triples.append({"train": int(g.train_mask.sum()), "val": int(g.val_mask.sum()),
+                          "test": int(g.test_mask.sum())})
+        del g
 
     # one training per hospital -> legacy (final epoch @0.5) AND val-selected numbers
-    lo = run_local_only_tracked(n_clients, cfg, epochs=local_only_epochs, eval_every=local_epochs)
+    if compute_local:
+        lo = run_local_only_tracked(n_clients, cfg, epochs=local_only_epochs, eval_every=local_epochs)
+        print(f"LOCAL-ONLY per-hospital macro-F1: {lo['f1s']} | weighted avg = {lo['wavg']:.4f} "
+              f"| AUROC = {lo['auroc']:.4f}")
+        print(f"LOCAL-ONLY (val-selected epoch+cutoff): {lo['val_f1s']} | weighted avg = "
+              f"{lo['val_wavg']:.4f} | worst = {lo['val_worst']} | epochs {lo['val_epoch']} "
+              f"| cutoffs {lo['val_thr']}")
+    else:   # local-only is trained once per seed, in the FedAvg arm
+        lo = {"f1s": [float("nan")] * n_clients, "wavg": float("nan"), "aucs": [None] * n_clients,
+              "auroc": float("nan"), "val_f1s": None, "val_wavg": None, "val_worst": None,
+              "val_aucs": None, "val_auroc": None, "val_thr": None, "val_epoch": None, "detail": None}
     lo_f1s, lo_avg, lo_aucs, lo_auc = lo["f1s"], lo["wavg"], lo["aucs"], lo["auroc"]
-    print(f"LOCAL-ONLY per-hospital macro-F1: {lo_f1s} | weighted avg = {lo_avg:.4f} "
-          f"| AUROC = {lo_auc:.4f}")
-    print(f"LOCAL-ONLY (val-selected epoch+cutoff): {lo['val_f1s']} | weighted avg = "
-          f"{lo['val_wavg']:.4f} | worst = {lo['val_worst']} | epochs {lo['val_epoch']} "
-          f"| cutoffs {lo['val_thr']}")
 
     # pooled baseline, scored with the SAME per-hospital protocol (apples-to-apples)
     if compute_pooled:
@@ -228,6 +358,8 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
 
     ngpu = (0.9 / n_clients) if DEVICE == "cuda" else 0.0
     reset_fed_history()
+    if strategy == "simft":
+        reset_simft_files()
     free_gpu()  # clear the local-only phase's allocations before the Ray clients start
     run_simulation(  # returns None in flwr 1.23; the strategy logs per-round F1 to disk
         server_app=server_app.app,
@@ -235,6 +367,12 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
         num_supernodes=n_clients,
         backend_config={"client_resources": {"num_cpus": 1, "num_gpus": ngpu}},
     )
+    try:   # release the Ray clients' GPU memory before any post-hoc fine-tuning
+        import ray
+        ray.shutdown()
+    except Exception:
+        pass
+    free_gpu()
     records = read_fed_records()
     fed = [r["macro_f1"] for r in records]
     fed_auc = [r.get("auroc") for r in records]
@@ -260,6 +398,39 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
               f"test F1 {vs['test_f1']:.4f} (val {vs['val_score']:.4f}) | at 0.5: "
               f"{vs['test_f1_at05']:.4f} | final round, val cutoff {vs['final_thr']:.3f}: "
               f"{vs['final_f1']:.4f} | worst-hospital {vs['worst']} | AUROC {vs['auroc']}")
+
+    phc = select_federated_phc(records, n_clients) if fed else None
+    if phc is not None:
+        print(f"FEDERATED (per-hospital cutoffs, val-selected round {phc['round']}): test F1 "
+              f"{phc['test_f1']:.4f} (val {phc['val_score']:.4f}) | worst-hospital {phc['worst']} "
+              f"| cutoffs {phc['thr']}")
+
+    ft = None
+    if finetune_epochs:
+        # FedAvg + fine-tune: start every hospital from the FINAL global model, train a few local
+        # epochs, and pick (epoch incl. 0, own cutoff) on that hospital's validation rows.
+        gp = None if strategy in ("simft", "personalized") else load_global_params()
+        ft_f1, ft_aucs, ft_thr, ft_ep, ft_detail = [], [], [], [], []
+        for c in range(n_clients):
+            data = load_client_graph(c)
+            model = init_model_on(data, cfg)
+            set_weights(model, load_personal_params(c) if gp is None else gp)
+            hist = local_train_tracked(model, data, finetune_epochs, eval_every=2, eval_at_start=True,
+                                       val_half=val_half)
+            sel = select_local([h["val_grid"] for h in hist], [h["test_grid"] for h in hist])
+            auc = hist[sel["ckpt"]]["test_auroc"]
+            ft_f1.append(round(sel["test_f1"], 4)); ft_thr.append(sel["thr"])
+            ft_aucs.append(round(auc, 4) if auc == auc else None)
+            ft_ep.append(hist[sel["ckpt"]]["epoch"])
+            ft_detail.append([{k: h[k] for k in ("epoch", "n_val", "n_test", "val_cm", "test_cm", "val_hist",
+                                                 "test_hist", "val_auroc", "test_auroc")} for h in hist])
+            del model, data
+            free_gpu()
+        ns = [t["test"] for t in n_triples]
+        ft = {"f1": float(np.average(ft_f1, weights=ns)), "per_client": ft_f1, "worst": round(min(ft_f1), 4),
+              "thr": ft_thr, "epoch": ft_ep, "auroc": _wavg_finite(ft_aucs, ns), "detail": ft_detail}
+        print(f"FEDAVG + FINE-TUNE ({finetune_epochs} ep): {ft_f1} | weighted = {ft['f1']:.4f} "
+              f"| epochs {ft_ep} | cutoffs {ft_thr}")
 
     pooled_str = f"{pl_avg:.4f}" + ("" if pl_worst is None else f" (worst {pl_worst})")
     strat_str = ("topology-aware "
@@ -289,6 +460,7 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     return {"alpha": alpha, "strategy": strategy,
              "topo_temperature": float(topo_temperature) if strategy == "topology" else None,
              "topo_mode": topo_mode if strategy == "topology" else None,
+             "topo_shuffle_perm": shuffle_perm,
              "pooled": pl_avg, "pooled_worst": pl_worst,
             "pooled_per_client": pl_f1s, "fedavg_best": fed_best,
             "fedavg_final": fed_final, "local_only": lo_avg,
@@ -304,9 +476,26 @@ def run_fedavg(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
             "val_fed_round": vs and vs["round"], "val_fed_thr": vs and vs["thr"],
             "val_worst_fed": vs and vs["worst"], "val_fed_per_client": vs and vs["per_client"],
             "val_fed_auroc": vs and vs["auroc"],
-            "val_local": round(lo["val_wavg"], 4), "val_worst_local": lo["val_worst"],
+            "val_local": None if lo["val_wavg"] is None else round(lo["val_wavg"], 4),
+            "val_worst_local": lo["val_worst"],
             "val_local_per_client": lo["val_f1s"], "val_local_auroc": lo["val_auroc"],
-            "val_local_thr": lo["val_thr"], "val_local_epoch": lo["val_epoch"]}
+            "val_local_thr": lo["val_thr"], "val_local_epoch": lo["val_epoch"],
+            # --- final-protocol additions: per-hospital cutoffs, raw counts, provenance
+            "phc": phc, "phc_f1": phc and round(phc["test_f1"], 4), "phc_worst": phc and phc["worst"],
+            "phc_per_client": phc and phc["per_client"], "phc_val_score": phc and round(phc["val_score"], 4),
+            "phc_round": phc and phc["round"], "phc_thr": phc and phc["thr"],
+            "phc_final": phc and phc["final_f1"], "phc_auroc": phc and phc["auroc"],
+            "finetune": ft, "ft_f1": ft and round(ft["f1"], 4), "ft_worst": ft and ft["worst"],
+            "personalized_T": personalized_T, "personalized_shuffle": personalized_shuffle,
+            "personalized_fp": personalized_fp if strategy == "personalized" else None,
+            "simft": cfg.get("simft"), "simft_rounds": read_simft_rounds() if strategy == "simft" else None,
+            "agg_weights": agg_weights, "fingerprints_all": fps_all, "fingerprints_train": fps_train,
+            "n_triples": n_triples, "local_detail": lo.get("detail"),
+            "records": _slim_records(records),
+            "assignment": ({int(c): sorted(map(str, assign.index[assign == c])) for c in range(n_clients)}
+                           if save_assignment else None),
+            "assignment_sizes": sizes, "train_frac": train_frac,
+            "wall_seconds": round(time.time() - t_start, 1), "provenance": _provenance()}
 
 
 def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
@@ -314,7 +503,12 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                   df=None, partition_fn=None, label: str | None = None,
                   compute_pooled: bool = True, local_only_epochs: int | None = None,
                   hidden: int = 128, strategy: str = "fedavg",
-                  topo_temperature: float = 1.0, topo_mode: str = "distinctiveness"):
+                  topo_temperature: float = 1.0, topo_mode: str = "distinctiveness",
+                  topo_shuffle: bool = False, compute_local: bool = True, finetune_epochs: int = 0,
+                  personalized_T: float | None = None, personalized_shuffle: bool = False,
+                  save_assignment: bool = False, train_frac: float = 1.0, save_global: bool = False,
+                  simft_tau: float = 1.0, simft_self_floor: float = 0.25, simft_flat: bool = False,
+                  personalized_fp: str = "topology", personalized_group_of=None):
     """Run FedAvg over several seeds; report mean +/- std to denoise the partition +
     training randomness. partition_fn swaps the split (default ward-Dirichlet at `alpha`;
     pass label_dirichlet / specimen_baseline for the non-IID settings).
@@ -338,7 +532,15 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
                                compute_pooled=compute_pooled,
                                local_only_epochs=local_only_epochs, hidden=hidden,
                                strategy=strategy, topo_temperature=topo_temperature,
-                               topo_mode=topo_mode))
+                               topo_mode=topo_mode, topo_shuffle=topo_shuffle,
+                               compute_local=compute_local, finetune_epochs=finetune_epochs,
+                               personalized_T=personalized_T,
+                               personalized_shuffle=personalized_shuffle,
+                               save_assignment=save_assignment, train_frac=train_frac,
+                               save_global=save_global, simft_tau=simft_tau,
+                               simft_self_floor=simft_self_floor, simft_flat=simft_flat,
+                               personalized_fp=personalized_fp,
+                               personalized_group_of=personalized_group_of))
 
     def ms(key):
         vals = [r[key] for r in runs if r.get(key) is not None and r[key] == r[key]]  # drop None/NaN
@@ -347,17 +549,18 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
         return round(float(np.mean(vals)), 4), round(float(np.std(vals)), 4)
 
     gains = [r["fedavg_best"] - r["local_only"] for r in runs
-             if r["fedavg_best"] is not None]
+             if r["fedavg_best"] is not None and r["local_only"] == r["local_only"]]
     lo, fb, ff = ms("local_only"), ms("fedavg_best"), ms("fedavg_final")
     pl, plw = ms("pooled"), ms("pooled_worst")    # centralized, same protocol
     wl, wf = ms("worst_local"), ms("worst_fed")   # worst-hospital (fairness) metric
     pla, loa, fba = ms("pooled_auroc"), ms("local_only_auroc"), ms("fedavg_auroc_best")  # AUROC
-    gmean, gstd = round(float(np.mean(gains)), 4), round(float(np.std(gains)), 4)
+    gmean, gstd = ((round(float(np.mean(gains)), 4), round(float(np.std(gains)), 4)) if gains else (None, None))
     # validation-selected protocol: same arms, round+cutoff chosen on val, test read once
     vkeys = ("val_fed", "val_fed_at05", "val_fed_final", "val_worst_fed", "val_fed_auroc",
-             "val_local", "val_worst_local", "val_local_auroc")
+             "val_local", "val_worst_local", "val_local_auroc", "phc_f1", "phc_worst", "ft_f1")
     vms = {k: ms(k) for k in vkeys}
-    vgains = [r["val_fed"] - r["val_local"] for r in runs if r.get("val_fed") is not None]
+    vgains = [r["val_fed"] - r["val_local"] for r in runs
+              if r.get("val_fed") is not None and r.get("val_local") is not None]
     vg = (round(float(np.mean(vgains)), 4), round(float(np.std(vgains)), 4)) if vgains else (None, None)
     worst_gains = [r["worst_fed"] - r["worst_local"] for r in runs
                    if r.get("worst_fed") is not None]
@@ -367,6 +570,9 @@ def run_multiseed(alpha: float = 0.5, n_clients: int = 5, rounds: int = 10,
     print(f"\n=== MULTI-SEED SUMMARY: {tag}, {len(seeds)} seeds ===")
     print(f"  pooled (same protocol) : {pl[0]} +/- {pl[1]}  | worst {plw[0]} +/- {plw[1]}")
     print(f"  local-only             : {lo[0]} +/- {lo[1]}")
+    print(f"  PER-HOSPITAL CUTOFFS (primary): federated {vms['phc_f1'][0]} +/- {vms['phc_f1'][1]} "
+          f"| worst {vms['phc_worst'][0]} +/- {vms['phc_worst'][1]}"
+          + (f" | fed+fine-tune {vms['ft_f1'][0]} +/- {vms['ft_f1'][1]}" if vms['ft_f1'][0] is not None else ""))
     print(f"  FedAvg best-round      : {fb[0]} +/- {fb[1]}")
     print(f"  FedAvg final           : {ff[0]} +/- {ff[1]}")
     print(f"  gain (best-local)      : {gmean} +/- {gstd}")

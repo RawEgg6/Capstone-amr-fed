@@ -180,7 +180,7 @@ class FlowerClient(NumPyClient):
         set_weights(self.model, parameters)
         local_train(self.model, self.data, self.cfg["local_epochs"],
                     proximal_mu=proximal_mu, global_weights=global_weights)
-        metrics: dict = {}
+        metrics: dict = {"cid": self.cid}   # lets a personalized server map results to hospitals
         # Phase 5: hand the server our topology fingerprint (driver-computed from our
         # patient subset and stored in run_config.json). Absent -> the server falls back
         # to plain FedAvg weights for us.
@@ -191,7 +191,7 @@ class FlowerClient(NumPyClient):
 
     def evaluate(self, parameters, config):
         set_weights(self.model, parameters)
-        ev = local_eval_full(self.model, self.data)
+        ev = local_eval_full(self.model, self.data, self.cfg.get("val_half"))
         # cid -> per-hospital breakdown; auroc alongside macro_f1. The val/test cutoff grids
         # (JSON, 29 floats each) let the server pick the round/cutoff on VALIDATION only
         # (see selection.py); macro_f1/auroc stay the legacy test @0.5 numbers.
@@ -199,6 +199,10 @@ class FlowerClient(NumPyClient):
             "macro_f1": ev["macro_f1"], "auroc": ev["auroc"], "cid": self.cid,
             "n_val": ev["n_val"], "val_grid": json.dumps(ev["val_grid"]),
             "test_grid": json.dumps(ev["test_grid"]),
+            # raw detail for later analysis (confusion counts per cutoff, probability histograms)
+            "val_cm": json.dumps(ev["val_cm"]), "test_cm": json.dumps(ev["test_cm"]),
+            "val_hist": json.dumps(ev["val_hist"]), "test_hist": json.dumps(ev["test_hist"]),
+            "val_auroc": ev["val_auroc"],
         }
 
 

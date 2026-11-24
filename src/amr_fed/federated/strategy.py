@@ -18,12 +18,17 @@ import json
 from typing import Union
 
 import numpy as np
-from flwr.common import FitRes, Parameters, Scalar, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.common import (EvaluateIns, FitIns, FitRes, Parameters, Scalar, ndarrays_to_parameters,
+                         parameters_to_ndarrays)
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
 
 from ..topology import FEATURE_NAMES, TopologyFingerprint, aggregation_weights
-from .task import FIT_METRIC_KEY
+from .simft import simft_weights
+from .task import (
+    FIT_METRIC_KEY, append_simft_round, cross_eval_losses, read_run_config, save_global_params,
+    save_personal_params,
+)
 
 
 def decode_fingerprint(raw) -> np.ndarray | None:
@@ -75,6 +80,8 @@ class TopologyAwareStrategy(FedAvg):
         mode: "consensus" (up-weight typical hospitals) or "distinctiveness"
             (up-weight the odd hospital out). Default "distinctiveness": our
             failure mode is the rare hospital that averaging erases.
+            "invsize" is a CONTROL, not a method: weights proportional to 1/n_train,
+            ignoring the fingerprint entirely.
         exclude / cv_floor: forwarded to ``topology.aggregation_weights``.
     """
 
@@ -95,6 +102,18 @@ class TopologyAwareStrategy(FedAvg):
         """Mix client weights by fingerprint similarity (fallback: size-proportional)."""
         if not results:
             return None, {}
+
+        if self.mode == "invsize":
+            # Control arm: weight each hospital by 1/n_train (small hospitals count more), with
+            # NO graph information. Tests whether topo is just "don't size-weight".
+            inv = 1.0 / np.maximum(np.array([float(r.num_examples) for _, r in results]), 1.0)
+            weights = inv / inv.sum()
+            ndarrays_list = [parameters_to_ndarrays(fit_res.parameters) for _, fit_res in results]
+            parameters = ndarrays_to_parameters(weighted_average(ndarrays_list, weights))
+            metrics: dict[str, Scalar] = {f"topo_weight_client_{i}": float(w)
+                                          for i, w in enumerate(weights)}
+            metrics["topology_mode"] = "invsize"
+            return parameters, metrics
 
         decoded = [decode_fingerprint(fit_res.metrics.get(FIT_METRIC_KEY))
                    for _, fit_res in results]
@@ -120,3 +139,110 @@ class TopologyAwareStrategy(FedAvg):
         metrics["topology_mode"] = used
         metrics["temperature"] = float(self.temperature)
         return parameters, metrics
+
+
+class SavingFedAvg(FedAvg):
+    """Plain FedAvg that also writes the aggregated global model to disk every round, so the driver
+    can fine-tune the final model at each hospital (the "FedAvg + fine-tune" baseline). Aggregation
+    itself is untouched, so results equal ``FedAvg``."""
+
+    def aggregate_fit(self, server_round, results, failures):
+        parameters, metrics = super().aggregate_fit(server_round, results, failures)
+        if parameters is not None:
+            save_global_params(parameters_to_ndarrays(parameters))
+        return parameters, metrics
+
+
+class PersonalizedStrategy(FedAvg):
+    """Topo v3: every hospital gets its OWN model each round.
+
+    After local training, hospital i's model is ``sum_j W[i, j] * theta_j`` (theta_j = hospital j's
+    trained weights); the next round's training starts from that personalized model, and evaluation
+    scores each hospital on its own model. ``W`` is row-stochastic (see
+    ``topology.personalized_weights``): the diagonal is largest, and hospitals with similar
+    fingerprints get more weight. Hospitals are identified by the ``cid`` each client reports in its
+    fit metrics, because Flower's own client ids are not the partition ids.
+    """
+
+    def __init__(self, W, **kwargs):
+        super().__init__(**kwargs)
+        self.W = np.asarray(W, dtype=np.float64)
+        self.personal: dict[int, list[np.ndarray]] = {}   # partition cid -> personalized weights
+        self.proxy2cid: dict[str, int] = {}               # flwr proxy id -> partition cid
+
+    def configure_fit(self, server_round, parameters, client_manager):
+        base = super().configure_fit(server_round, parameters, client_manager)
+        if not self.personal:                              # round 1: everyone starts from the same init
+            return base
+        out = []
+        for proxy, ins in base:
+            cid = self.proxy2cid.get(proxy.cid)
+            if cid in self.personal:
+                ins = FitIns(ndarrays_to_parameters(self.personal[cid]), ins.config)
+            out.append((proxy, ins))
+        return out
+
+    def aggregate_fit(self, server_round, results, failures):
+        if not results:
+            return None, {}
+        trained: dict[int, list[np.ndarray]] = {}
+        for proxy, fit_res in results:
+            cid = int(fit_res.metrics["cid"])
+            self.proxy2cid[proxy.cid] = cid
+            trained[cid] = parameters_to_ndarrays(fit_res.parameters)
+        n = self.W.shape[0]
+        if sorted(trained) != list(range(n)):
+            raise RuntimeError(f"personalized aggregation needs all {n} hospitals, got {sorted(trained)}")
+        ordered = [trained[j] for j in range(n)]
+        for i in range(n):
+            self.personal[i] = weighted_average(ordered, self.W[i])
+            save_personal_params(i, self.personal[i])           # the driver fine-tunes from these
+        mean = weighted_average(ordered, np.full(n, 1.0 / n))   # placeholder "global" model (unused for scoring)
+        return ndarrays_to_parameters(mean), {"topology_mode": "personalized"}
+
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        base = super().configure_evaluate(server_round, parameters, client_manager)
+        out = []
+        for proxy, ins in base:
+            cid = self.proxy2cid.get(proxy.cid)
+            if cid in self.personal:
+                ins = EvaluateIns(ndarrays_to_parameters(self.personal[cid]), ins.config)
+            out.append((proxy, ins))
+        return out
+
+
+class SimFTStrategy(PersonalizedStrategy):
+    """SimFT: personalized aggregation whose weights come from function-space similarity.
+
+    Each round, after local training, every hospital's trained model is scored on every hospital's
+    validation half A (``task.cross_eval_losses``); ``simft.simft_weights`` turns that loss matrix into a
+    row-stochastic mixing matrix (self-floor + softmax over how much better a neighbour's model is on my
+    data); hospital i's next model is ``sum_j W[i, j] * theta_j``. The mixing matrix and loss matrix of every
+    round are logged for analysis, and every hospital's personalized model is saved so the driver can
+    fine-tune from it. ``flat=True`` is the ablation (equal neighbour weights, same self-floor).
+    """
+
+    def __init__(self, tau: float = 1.0, self_floor: float = 0.25, flat: bool = False, **kwargs):
+        super().__init__(W=np.eye(1), **kwargs)     # W unused: recomputed every round
+        self.tau, self.self_floor, self.flat = tau, self_floor, flat
+
+    def aggregate_fit(self, server_round, results, failures):
+        if not results:
+            return None, {}
+        trained: dict[int, list[np.ndarray]] = {}
+        for proxy, fit_res in results:
+            cid = int(fit_res.metrics["cid"])
+            self.proxy2cid[proxy.cid] = cid
+            trained[cid] = parameters_to_ndarrays(fit_res.parameters)
+        n = len(trained)
+        if sorted(trained) != list(range(n)):
+            raise RuntimeError(f"SimFT needs every hospital each round, got {sorted(trained)}")
+        ordered = [trained[j] for j in range(n)]
+        L = cross_eval_losses(ordered, read_run_config(), half="A")
+        W = simft_weights(L, tau=self.tau, self_floor=self.self_floor, flat=self.flat)
+        for i in range(n):
+            self.personal[i] = weighted_average(ordered, W[i])
+            save_personal_params(i, self.personal[i])
+        append_simft_round({"round": server_round, "W": W.tolist(), "L": L.tolist()})
+        mean = weighted_average(ordered, np.full(n, 1.0 / n))
+        return ndarrays_to_parameters(mean), {"topology_mode": "simft"}

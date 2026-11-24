@@ -188,8 +188,24 @@ def test_aggregation_weights_empty_selection_falls_back_uniform():
     assert np.allclose(w, 1.0 / 3)               # indistinguishable -> FedAvg
 
 
+def test_derangement_has_no_fixed_point_and_is_deterministic():
+    from amr_fed.topology import derangement
+    for n in (2, 3, 10):
+        for seed in range(25):
+            p = derangement(n, seed)
+            assert sorted(p) == list(range(n)) and all(p[i] != i for i in range(n))
+            assert p == derangement(n, seed)
+    assert len({tuple(derangement(10, s)) for s in range(25)}) > 1   # varies with the seed
+    try:
+        derangement(1, 0)
+        raise AssertionError("n=1 has no derangement")
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     test_fingerprint_shape_names_and_dict()
+    test_derangement_has_no_fixed_point_and_is_deterministic()
     test_fingerprint_deterministic()
     test_history_flag_only_touches_history_feature()
     test_fingerprint_rejects_empty_frame()

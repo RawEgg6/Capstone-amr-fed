@@ -53,6 +53,45 @@ def macro_f1_grid(y, p, thresholds=THRESHOLDS) -> np.ndarray:
     return (f1 + f0) / present
 
 
+N_HIST_BINS = 20   # predicted-probability histogram resolution (0.05 per bin)
+
+
+def confusion_counts(y, p, thresholds=THRESHOLDS) -> np.ndarray:
+    """(len(thresholds), 4) integer array of [tp, fp, fn, tn] for ``p >= t`` against binary ``y``.
+
+    Every threshold metric (macro-F1, per-class F1, balanced accuracy, ...) can be recomputed from
+    these counts later, which is why the federated runs ship them instead of one F1 number."""
+    y = np.asarray(y).astype(np.int64).ravel()
+    p = np.asarray(p, dtype=np.float64).ravel()
+    t = np.asarray(thresholds, dtype=np.float64)
+    pos = np.sort(p[y == 1])
+    neg = np.sort(p[y == 0])
+    tp = pos.size - np.searchsorted(pos, t, side="left")
+    fp = neg.size - np.searchsorted(neg, t, side="left")
+    return np.stack([tp, fp, pos.size - tp, neg.size - fp], axis=1).astype(np.int64)
+
+
+def macro_f1_from_counts(cm) -> np.ndarray:
+    """Macro-F1 per row of a ``confusion_counts`` array (same label handling as macro_f1_grid)."""
+    cm = np.asarray(cm, dtype=np.float64)
+    tp, fp, fn, tn = cm[:, 0], cm[:, 1], cm[:, 2], cm[:, 3]
+    d1, d0 = 2 * tp + fp + fn, 2 * tn + fn + fp
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f1 = np.where(d1 > 0, 2.0 * tp / d1, 0.0)
+        f0 = np.where(d0 > 0, 2.0 * tn / d0, 0.0)
+    present = (d1 > 0).astype(float) + (d0 > 0).astype(float)
+    return (f1 + f0) / present
+
+
+def prob_hist(y, p, bins: int = N_HIST_BINS) -> list[list[int]]:
+    """[positives per probability bin, negatives per probability bin] over [0, 1]."""
+    y = np.asarray(y).astype(np.int64).ravel()
+    p = np.asarray(p, dtype=np.float64).ravel()
+    pos = np.histogram(p[y == 1], bins=bins, range=(0.0, 1.0))[0]
+    neg = np.histogram(p[y == 0], bins=bins, range=(0.0, 1.0))[0]
+    return [pos.astype(int).tolist(), neg.astype(int).tolist()]
+
+
 def weighted_grid(grids, weights) -> np.ndarray:
     """Weighted mean of per-hospital grids; hospitals with weight 0 or a NaN grid are skipped.
     Returns all-NaN when nothing is usable."""
@@ -84,7 +123,7 @@ def grid_record(metrics) -> dict:
         n_val.append(int(m.get("n_val", 0)))
         vg.append(json.loads(m["val_grid"]))
         tg.append(json.loads(m["test_grid"]))
-    return {
+    rec = {
         "val_grid": weighted_grid(vg, n_val).tolist(),
         "test_grid": weighted_grid(tg, n_test).tolist(),
         "per_client_val_grid": dict(zip(cids, vg)),
@@ -92,6 +131,14 @@ def grid_record(metrics) -> dict:
         "n_val": dict(zip(cids, n_val)),
         "n_test": dict(zip(cids, n_test)),
     }
+    # optional raw detail (confusion counts, probability histograms, validation AUROC): stored so
+    # any threshold metric / calibration plot can be recomputed without retraining
+    for key in ("val_cm", "test_cm", "val_hist", "test_hist"):
+        if all(key in m for _, m in metrics):
+            rec[f"per_client_{key}"] = {c: json.loads(m[key]) for c, (_, m) in zip(cids, metrics)}
+    if all("val_auroc" in m for _, m in metrics):
+        rec["per_client_val_auroc"] = {c: m["val_auroc"] for c, (_, m) in zip(cids, metrics)}
+    return rec
 
 
 # ---- driver side: pick the round/cutoff on validation, read test there ------------------
@@ -125,6 +172,64 @@ def select_federated(records, n_clients: int) -> dict | None:
         "per_client": per_client, "worst": round(min(ok), 4) if ok else None,
         "auroc": auc if auc is not None and auc == auc else None,
         "per_client_auroc": [rec.get("per_client_auroc", {}).get(str(c)) for c in range(n_clients)],
+    }
+
+
+def select_federated_phc(records, n_clients: int) -> dict | None:
+    """Per-hospital-cutoff selection (the primary protocol of the final runs).
+
+    Same as ``select_federated`` except that every hospital picks its OWN cutoff on its OWN
+    validation rows, which is what local-only has always done. The round is the one with the best
+    size-weighted (by n_val) validation macro-F1 when each hospital uses its best cutoff; test is
+    read once, at that round and those cutoffs, weighted by n_test.
+
+      round / val_score       chosen round (1-based) and its validation score
+      thr                     per-hospital cutoffs (None for a hospital with no validation rows)
+      test_f1 / per_client    weighted test macro-F1 and each hospital's, at (round, own cutoff)
+      worst                   lowest per-hospital test F1
+      final_f1 / final_thr    same rule applied to the last round only
+      auroc / per_client_auroc  test AUROC at the chosen round (cutoff-free)
+    Returns None for history without per-hospital validation grids."""
+    if not records or "per_client_val_grid" not in records[0]:
+        return None
+    cids = [str(c) for c in range(n_clients)]
+
+    def at_round(rec):
+        thr_idx, val_best, test_at, n_v, n_t = [], [], [], [], []
+        for c in cids:
+            vg = rec["per_client_val_grid"].get(c)
+            tg = rec["per_client_test_grid"].get(c)
+            nv, nt = rec["n_val"].get(c, 0), rec["n_test"].get(c, 0)
+            if vg is None or tg is None or np.isnan(np.asarray(vg, dtype=float)).all():
+                thr_idx.append(None); val_best.append(np.nan); test_at.append(np.nan)
+            else:
+                j = int(np.nanargmax(np.asarray(vg, dtype=float)))
+                thr_idx.append(j); val_best.append(float(vg[j])); test_at.append(float(tg[j]))
+            n_v.append(nv); n_t.append(nt)
+        ok_v = [(v, w) for v, w in zip(val_best, n_v) if v == v and w > 0]
+        if not ok_v:
+            return None
+        val_score = sum(v * w for v, w in ok_v) / sum(w for _, w in ok_v)
+        ok_t = [(v, w) for v, w in zip(test_at, n_t) if v == v and w > 0]
+        test = sum(v * w for v, w in ok_t) / sum(w for _, w in ok_t) if ok_t else float("nan")
+        return {"val": val_score, "test": test, "thr_idx": thr_idx, "per_client": test_at}
+
+    per_round = [at_round(r) for r in records]
+    if all(x is None for x in per_round):
+        raise ValueError("no usable validation scores to select on")
+    r = max((i for i, x in enumerate(per_round) if x is not None), key=lambda i: per_round[i]["val"])
+    sel, last = per_round[r], per_round[-1]
+    thr = [None if j is None else float(THRESHOLDS[j]) for j in sel["thr_idx"]]
+    pc = [None if v != v else round(float(v), 4) for v in sel["per_client"]]
+    ok = [v for v in pc if v is not None]
+    rec = records[r]
+    return {
+        "round": r + 1, "val_score": float(sel["val"]), "test_f1": float(sel["test"]), "thr": thr,
+        "per_client": pc, "worst": round(min(ok), 4) if ok else None,
+        "final_f1": None if last is None else float(last["test"]),
+        "final_thr": None if last is None else [None if j is None else float(THRESHOLDS[j]) for j in last["thr_idx"]],
+        "auroc": rec.get("auroc") if rec.get("auroc") == rec.get("auroc") else None,
+        "per_client_auroc": [rec.get("per_client_auroc", {}).get(c) for c in cids],
     }
 
 
