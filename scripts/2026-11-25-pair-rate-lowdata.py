@@ -162,6 +162,30 @@ def random_groups_test():
         print(_fmt_stat(name, _stat(d), d))
 
 
+def shift_cost(frac=GATE_FRAC):
+    """How much does the shift itself cost? Train FedAvg (+ local-only) on the ORIGINAL labels (same hospitals, seeds, level),
+    then compare with the shifted run. The drop bounds what any grouping method could win back (diagnostic, not pre-registered)."""
+    import ray
+    from amr_fed.data_loader import load_cohort_frame
+    os.environ.pop("AMR_RNG_PROBE", None)
+    p = RES / f"amr_pairrate_orig_f{int(round(frac * 1000)):03d}.json"
+    res = json.load(open(p)) if p.exists() else {}
+    kw = dict(seeds=SEEDS, df=load_cohort_frame(), rounds=8, local_epochs=BR.LOCAL_EPOCHS, local_only_epochs=40, hidden=128,
+              n_clients=pr.N_HOSP, train_frac=frac, partition_fn=pr.partition_fn)
+    res = BR.run_part(res, {"fedavg": ARMS["fedavg"]}, prefix=f"pairrate-orig/{frac}", kw=kw,
+                      checkpoint=lambda r: P.save_json(r, p), ray_shutdown=ray.shutdown)
+    P.save_json(res, p)
+    o, sh = values(res), values(json.load(open(path(frac))))
+    print(f"shift cost at {frac * 100:g}% (unweighted mean F1; original labels vs shifted labels, same hospitals and seeds)")
+    for k in ("local-only (40)", "fedavg (32)", "fedavg+ft"):
+        d = sh[k] - o[k]
+        print(f"  {k:<18} original {o[k].mean():.4f} | shifted {sh[k].mean():.4f}")
+        print(_fmt_stat("   shifted - original", _stat(d), d))
+    for name, v in (("original", o), ("shifted", sh)):
+        d = v["fedavg+ft"] - v["local-only (40)"]
+        print(_fmt_stat(f"fedavg+ft - local-only, {name}", _stat(d), d))
+
+
 def report():
     for frac in FRACS:
         p = path(frac)
@@ -200,6 +224,8 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a and a[0] == "report":
         report()
+    elif a and a[0] == "shiftcost":
+        shift_cost()
     elif a and a[0] == "random":
         random_groups_test()
     elif a and a[0] == "headroom":

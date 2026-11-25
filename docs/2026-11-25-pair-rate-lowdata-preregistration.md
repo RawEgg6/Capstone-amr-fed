@@ -57,3 +57,8 @@ than random groups, so on this split the regions carry no useful information. In
 **Offline check, same day (no training):** a predictor that uses each hospital's own pair resistance rate scores AUROC 0.8398 on the shifted data (0.8385 on the original), against 0.8344 for
 the all-hospital pair rate. Each hospital's graph already holds its own training-label pair rates (`graph_build.py`, near line 371), so a rate shift is visible in each model's inputs and a
 shared model has no conflict to resolve. The gate verdict stands: null on this split.
+**Shift-cost diagnostic, same day (not pre-registered; `shift_cost()`):** FedAvg and local-only trained on the ORIGINAL labels (same hospitals, 3%, seeds 42-46), compared with the shifted run (paired by seed;
+test labels are shifted too, so this is a rough bound). Unweighted mean F1: local-only 0.6703 -> 0.6655 (-0.0048, p = 0.23); FedAvg 0.6758 -> 0.6705 (-0.0053, p = 0.03); FedAvg + fine-tune 0.6828 -> 0.6734
+(-0.0094, p < 0.01, 0/5 seeds above zero). FedAvg + fine-tune minus local-only: +0.0125 on original labels, +0.0079 on shifted. **Reading:** the whole shift costs a federated model about 0.005-0.009 F1, and the part
+federation loses relative to local-only is about 0.005. That is the most any grouping method could win back, and it is the size of the noise at 5 seeds (+-0.005 to 0.01). The oracle recovered none of it
+(-0.0027). This split is too mild to test similarity weighting; a test needs a shift that costs plain FedAvg clearly more.
