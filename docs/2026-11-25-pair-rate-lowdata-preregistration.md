@@ -77,3 +77,14 @@ reported as such, not as a replacement for the first.
 **Cost against the original labels:** local-only 0.6703 -> 0.6535 (-0.0168, p = 0.01); FedAvg + fine-tune 0.6828 -> 0.6724 (-0.0104, p = 0.01). Most of this is the 24% of rows dropped, not the shift, which is why local-only
 loses more than FedAvg: FedAvg + fine-tune minus local-only is +0.0189 here against +0.0125 on the original labels (federation helps more when each hospital has less data). So this version cannot be used to bound the
 shift's own cost; the flip version's bound (about 0.005-0.009) stands.
+
+### 2026-11-26 — rate-input ablation (diagnostic, not pre-registered; `scripts/2026-11-26-rate-input-ablation.py`)
+**Correction first:** the graph's organism and antibiotic node features carry each hospital's own train-label resistance rate per ORGANISM and per ANTIBIOTIC (`graph_build.py`, `org_rate`, `abx_rate`), not per organism-antibiotic pair. The earlier
+statement that each hospital's model sees its own pair rates was too strong, and the offline pair-rate predictor check (AUROC 0.8398) does not describe the model's inputs. The null verdicts above rest on the measured scores and are unchanged;
+the explanation for them is open (the hospital's own training and the fine-tune could also learn pair rates from its labels).
+**Test:** the same shifted data, 3%, seeds 42-46, FedAvg arm only, with the last column of the organism and antibiotic node features (the rate) set to 0. Unweighted mean F1:
+local-only 0.6655 -> 0.6200 (-0.0455, CI [-0.0532, -0.0377]); FedAvg 0.6705 -> 0.6306 (-0.0399); FedAvg + fine-tune 0.6734 -> 0.6339 (-0.0395, CI [-0.0490, -0.0300]); 0/5 seeds above zero for every arm.
+FedAvg + fine-tune minus local-only: +0.0079 with the rates, +0.0139 without (5/5 seeds).
+**Reading:** the rate inputs are worth about 0.04 F1 at 3% data, far more than the whole pair-rate shift costs (0.005-0.009). A hospital's own rates are information the model uses heavily, and without them federation helps more because a small local
+model cannot learn the base rates alone. This does not by itself say whether pair-level rate shifts are visible to the model; it only shows the rate inputs matter.
+
