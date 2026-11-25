@@ -62,3 +62,13 @@ test labels are shifted too, so this is a rough bound). Unweighted mean F1: loca
 (-0.0094, p < 0.01, 0/5 seeds above zero). FedAvg + fine-tune minus local-only: +0.0125 on original labels, +0.0079 on shifted. **Reading:** the whole shift costs a federated model about 0.005-0.009 F1, and the part
 federation loses relative to local-only is about 0.005. That is the most any grouping method could win back, and it is the size of the noise at 5 seeds (+-0.005 to 0.01). The oracle recovered none of it
 (-0.0027). This split is too mild to test similarity weighting; a test needs a shift that costs plain FedAvg clearly more.
+
+### 2026-11-26 — iteration 2: resampling instead of label flips (written before the run)
+Suggested by the team: reach each hospital's target rate without changing any label. `make_df(df, mode="resample")` keeps every label real and DROPS rows: to raise a rate only a share of the
+susceptible rows is kept, to lower it only a share of the resistant rows. Offline check (no training): rates hit the targets (odds ratio median 2.94, middle half 2.49-3.59, same as the flip version),
+the region structure is unchanged (true-rate distance ratio 0.53; label fingerprint 0.52; topology fingerprint 0.86), and **24.0% of rows are dropped** (1,601,980 -> 1,216,886; 116k-127k rows per hospital,
+95 patients lost) against 3.5% of labels changed in the flip version. Overall resistant rate 0.195 -> 0.198.
+**Run:** the same gate as section 4, at 3%, 5 seeds, fedavg + oracle only, on the resampled data (`resample_gate()`, `results/amr_pairrate_rs_f030.json`), plus FedAvg's cost against the original labels (same
+diagnostic as above, reusing `amr_pairrate_orig_f030.json`). Same rule: the oracle must beat FedAvg + fine-tune with a 95% interval above zero, otherwise stop. This is a second attempt at the same gate and is
+reported as such, not as a replacement for the first.
+**Expectation (stated before the run):** resampling changes only the rate, which each hospital's model already sees in its inputs, so I expect the same null. A different result would mean the label noise in the flip version was masking a real effect.

@@ -68,9 +68,12 @@ def partition_fn(df, seed):
     return hospital_of(df)   # fixed by patient id: the data differs by hospital, not the assignment
 
 
-def make_df(df, seed=SEED):
+def make_df(df, seed=SEED, mode="flip"):
     """Copy of df with each hospital's rate on every well-tested pair moved to its target.
-    Returns (df, pairs, flipped) where pairs is a DataFrame (organism, drug, class, tests, base rate, per-hospital target)."""
+    mode="flip": the minimum number of random label flips. mode="resample": keep every label real and DROP rows instead (to raise a
+    rate keep only a share of the susceptible rows, to lower it keep only a share of the resistant rows), so the rate hits the target
+    without any flipped label. Returns (df, pairs, changed) where changed = flipped (flip) or dropped (resample) rows and pairs is a
+    DataFrame (organism, drug, class, tests, base rate)."""
     from amr_fed.data_loader import ABX, ORG, PK
     rng = np.random.default_rng(seed)
     out = df.copy()
@@ -99,6 +102,14 @@ def make_df(df, seed=SEED):
     r = np.bincount(cell, weights=y, minlength=n_all * N_HOSP) / np.maximum(np.bincount(cell, minlength=n_all * N_HOSP), 1)
     t_row, r_row = target.reshape(-1)[cell], r[cell]
     u = rng.random(len(out))
+    if mode == "resample":
+        r_c, t_c = np.clip(r_row, 1e-6, 1 - 1e-6), np.clip(t_row, 1e-6, 1 - 1e-6)
+        keep_sus = np.where(t_c > r_c, r_c * (1 - t_c) / (t_c * (1 - r_c)), 1.0)    # share of susceptible rows kept (raise)
+        keep_res = np.where(t_c < r_c, t_c * (1 - r_c) / (r_c * (1 - t_c)), 1.0)    # share of resistant rows kept (lower)
+        drop = keep[pair] & (((y == 0) & (u >= keep_sus)) | ((y == 1) & (u >= keep_res)))
+        out = out[~drop].copy()
+        pairs = pd.DataFrame({"organism": org, "drug": abx, "class": cls, "tests": tests, "base": base})[keep].reset_index()
+        return out, pairs, int(drop.sum())
     up = keep[pair] & (t_row > r_row) & (y == 0) & (u < (t_row - r_row) / np.maximum(1 - r_row, 1e-9))
     down = keep[pair] & (t_row < r_row) & (y == 1) & (u < (r_row - t_row) / np.maximum(r_row, 1e-9))
     y_new = y.copy()

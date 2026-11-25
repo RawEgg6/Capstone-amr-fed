@@ -186,6 +186,34 @@ def shift_cost(frac=GATE_FRAC):
         print(_fmt_stat(f"fedavg+ft - local-only, {name}", _stat(d), d))
 
 
+def resample_gate(frac=GATE_FRAC):
+    """Iteration 2 (2026-11-26): the same gate on data where rates are reached by DROPPING rows (every label real) instead of flipping labels."""
+    import ray
+    from amr_fed.data_loader import load_cohort_frame
+    os.environ.pop("AMR_RNG_PROBE", None)
+    p = RES / f"amr_pairrate_rs_f{int(round(frac * 1000)):03d}.json"
+    res = json.load(open(p)) if p.exists() else {}
+    kw = dict(seeds=SEEDS, df=pr.make_df(load_cohort_frame(), mode="resample")[0], rounds=8, local_epochs=BR.LOCAL_EPOCHS,
+              local_only_epochs=40, hidden=128, n_clients=pr.N_HOSP, train_frac=frac, partition_fn=pr.partition_fn)
+    arms = {k: ALL_ARMS[k] for k in ("fedavg", "oracle")}
+    res = BR.run_part(res, arms, prefix=f"pairrate-rs/{frac}", kw=kw, checkpoint=lambda r: P.save_json(r, p), ray_shutdown=ray.shutdown)
+    P.save_json(res, p)
+    v = values(res)
+    for k, x in v.items():
+        print(f"  {k:<20}{x.mean():.4f} +/- {x.std():.4f}  {np.round(x, 4)}")
+    d = v["oracle+ft"] - v["fedavg+ft"]
+    st = _stat(d)
+    print(_fmt_stat("oracle+ft - fedavg+ft", st, d))
+    print("GATE PASSED" if st["lo"] > 0 else "GATE FAILED: the oracle does not beat FedAvg + fine-tune. Stop; report a null result.")
+    po = RES / f"amr_pairrate_orig_f{int(round(frac * 1000)):03d}.json"
+    if po.exists():
+        o = values(json.load(open(po)))
+        for k in ("local-only (40)", "fedavg+ft"):
+            dd = v[k] - o[k]
+            print(f"  {k:<18} original {o[k].mean():.4f} | resampled {v[k].mean():.4f}")
+            print(_fmt_stat("   resampled - original", _stat(dd), dd))
+
+
 def report():
     for frac in FRACS:
         p = path(frac)
@@ -224,6 +252,8 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a and a[0] == "report":
         report()
+    elif a and a[0] == "resample":
+        resample_gate()
     elif a and a[0] == "shiftcost":
         shift_cost()
     elif a and a[0] == "random":
