@@ -28,3 +28,10 @@ No input reveals which rule applies, unlike a rate difference.
 - The topology fingerprint is not tested here (the 2026-11-02 pre-registration tested it only on panel splits).
 
 ## 6. Iterations (append below, dated)
+
+### 2026-11-26 — result (3%, `shift25`, seeds 42-46, unweighted mean F1 after the same 8-epoch fine-tune; `results/amr_inversion_f030.json`)
+**Gate:** FedAvg + fine-tune 0.7536, oracle + fine-tune 0.7642; `oracle+ft - fedavg+ft` = +0.0106, 95% CI [+0.0049, +0.0162], p = 0.01, 5/5 seeds above zero. **Gate passed.**
+**Fingerprint arms (run after the gate, as registered):** v3_ab + fine-tune 0.7627, v3_ab_shuffled + fine-tune 0.7531.
+`v3_ab+ft - fedavg+ft` = +0.0090 [+0.0026, +0.0155], p = 0.02, 5/5 seeds; `v3_ab+ft - v3_ab_shuffled+ft` = +0.0096 [+0.0037, +0.0154], p = 0.01, 5/5 seeds; `oracle+ft - v3_ab+ft` = +0.0015 [-0.0001, +0.0032], p = 0.06, 4/5 seeds.
+**Both pre-registered conditions hold: the fingerprint works at 3% on this shift.** Weights (mean over seeds): v3_ab self 0.200 | own group 0.771 | other group 0.029; shuffled 0.200 | 0.322 | 0.478; oracle 0.200 | 0.800 | 0.000.
+**Reading:** the label fingerprint finds the true groups (77% of the weight on the own group against 80% for the oracle) and recovers about 85% of the oracle's gain; the shuffled control, which spreads weight over both groups, scores the same as FedAvg. Limits as in section 5: inversion is synthetic, one shift level, five seeds.
