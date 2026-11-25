@@ -88,3 +88,8 @@ FedAvg + fine-tune minus local-only: +0.0079 with the rates, +0.0139 without (5/
 **Reading:** the rate inputs are worth about 0.04 F1 at 3% data, far more than the whole pair-rate shift costs (0.005-0.009). A hospital's own rates are information the model uses heavily, and without them federation helps more because a small local
 model cannot learn the base rates alone. This does not by itself say whether pair-level rate shifts are visible to the model; it only shows the rate inputs matter.
 
+
+### 2026-11-26 — gate with the rate inputs removed (diagnostic, not pre-registered)
+Asked because removing the organism/antibiotic rate inputs costs ~0.04 F1, so the model could be missing information the groups might supply. Same gate, same data, 3%, seeds 42-46, rate columns zeroed (`scripts/2026-11-26-rate-input-ablation.py oracle`, `results/amr_pairrate_norate_f030.json`).
+Unweighted mean F1: FedAvg + fine-tune 0.6339, oracle + fine-tune (true regions) 0.6310. `oracle+ft - fedavg+ft` = -0.0030, 95% CI [-0.0070, +0.0011], p = 0.11, 1/5 seeds above zero. **Gate failed**: null again, so the fingerprint arms were not run.
+**Reading:** the null on this split does not depend on the rate inputs; with them off the oracle still does not beat FedAvg + fine-tune (-0.0030 vs -0.0027 with them on).

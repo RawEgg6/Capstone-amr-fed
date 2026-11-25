@@ -4,7 +4,8 @@ Same setup as the pair-rate split at 3% data, fedavg arm only (gives local-only,
 organism and antibiotic node features (each hospital's own train-label resistance rate, graph_build.py) is set to 0 (its z-scored mean).
 Compare with `results/amr_pairrate_f030.json` (same data, same seeds, rates on).
 
-    python scripts/2026-11-26-rate-input-ablation.py          # run (resume-safe) and print the comparison
+    python scripts/2026-11-26-rate-input-ablation.py                  # fedavg arm (resume-safe), prints the rates on/off comparison
+    python scripts/2026-11-26-rate-input-ablation.py oracle [arm ...]  # more arms with the rates off, prints their gain over FedAvg + fine-tune
 """
 import importlib.util
 import json
@@ -47,7 +48,8 @@ def main():
     res = json.load(open(OUT)) if OUT.exists() else {}
     kw = dict(seeds=pl.SEEDS, df=pl.data(), rounds=8, local_epochs=BR.LOCAL_EPOCHS, local_only_epochs=40, hidden=128,
               n_clients=pl.pr.N_HOSP, train_frac=FRAC, partition_fn=pl.pr.partition_fn)
-    res = BR.run_part(res, {"fedavg": pl.ARMS["fedavg"]}, prefix="norate/0.03", kw=kw,
+    arms = ["fedavg", *sys.argv[1:]]
+    res = BR.run_part(res, {k: pl.ALL_ARMS[k] for k in arms}, prefix="norate/0.03", kw=kw,
                       checkpoint=lambda r: P.save_json(r, OUT), ray_shutdown=ray.shutdown)
     P.save_json(res, OUT)
     on, off = pl.values(json.load(open(pl.path(FRAC)))), pl.values(res)
@@ -59,6 +61,10 @@ def main():
     for name, v in (("rates on", on), ("rates off", off)):
         d = v["fedavg+ft"] - v["local-only (40)"]
         print(_fmt_stat(f"fedavg+ft - local-only, {name}", _stat(d), d))
+    for k in arms[1:]:
+        d = off[f"{k}+ft"] - off["fedavg+ft"]
+        print(f"  {k}+ft rates off {off[f'{k}+ft'].mean():.4f}")
+        print(_fmt_stat(f"   {k}+ft - fedavg+ft, rates off", _stat(d), d))
 
 
 if __name__ == "__main__":
