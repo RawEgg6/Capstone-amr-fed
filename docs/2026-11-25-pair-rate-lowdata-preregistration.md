@@ -72,3 +72,8 @@ the region structure is unchanged (true-rate distance ratio 0.53; label fingerpr
 diagnostic as above, reusing `amr_pairrate_orig_f030.json`). Same rule: the oracle must beat FedAvg + fine-tune with a 95% interval above zero, otherwise stop. This is a second attempt at the same gate and is
 reported as such, not as a replacement for the first.
 **Expectation (stated before the run):** resampling changes only the rate, which each hospital's model already sees in its inputs, so I expect the same null. A different result would mean the label noise in the flip version was masking a real effect.
+**Iteration 2 result (resampled data, 3%, 5 seeds, unweighted mean F1 after fine-tune):** local-only 0.6535, FedAvg 0.6655, FedAvg + fine-tune 0.6724, oracle + fine-tune 0.6716.
+`oracle+ft - fedavg+ft` = -0.0008, 95% CI [-0.0053, +0.0037], p = 0.65, 2/5 seeds above zero. **Gate failed again**, same rule as before: null on this split. As expected, the expectation stated above held.
+**Cost against the original labels:** local-only 0.6703 -> 0.6535 (-0.0168, p = 0.01); FedAvg + fine-tune 0.6828 -> 0.6724 (-0.0104, p = 0.01). Most of this is the 24% of rows dropped, not the shift, which is why local-only
+loses more than FedAvg: FedAvg + fine-tune minus local-only is +0.0189 here against +0.0125 on the original labels (federation helps more when each hospital has less data). So this version cannot be used to bound the
+shift's own cost; the flip version's bound (about 0.005-0.009) stands.
