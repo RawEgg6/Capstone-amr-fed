@@ -93,3 +93,8 @@ model cannot learn the base rates alone. This does not by itself say whether pai
 Asked because removing the organism/antibiotic rate inputs costs ~0.04 F1, so the model could be missing information the groups might supply. Same gate, same data, 3%, seeds 42-46, rate columns zeroed (`scripts/2026-11-26-rate-input-ablation.py oracle`, `results/amr_pairrate_norate_f030.json`).
 Unweighted mean F1: FedAvg + fine-tune 0.6339, oracle + fine-tune (true regions) 0.6310. `oracle+ft - fedavg+ft` = -0.0030, 95% CI [-0.0070, +0.0011], p = 0.11, 1/5 seeds above zero. **Gate failed**: null again, so the fingerprint arms were not run.
 **Reading:** the null on this split does not depend on the rate inputs; with them off the oracle still does not beat FedAvg + fine-tune (-0.0030 vs -0.0027 with them on).
+
+### 2026-11-26 — why nothing helps: the ceiling (offline, no federation; `scripts/2026-11-26-pair-rate-ceiling.py`)
+Gradient-boosted trees on the full cohort, patients split 70/30, features = patient history (graph_build `_history_raw`) + pooled organism-antibiotic rate, then + the hospital's own pair rate (out-of-fold). Test AUROC:
+original labels 0.9183 -> 0.9176 (-0.0007); shifted labels 0.8886 -> 0.8930 (+0.0044). **Knowing each hospital's own pair rates is worth at most about +0.004 AUROC** on top of patient history, even with a model that sees them perfectly.
+That is the same size as the 5-seed noise (+-0.005) and as the whole measured shift cost (0.005-0.009 F1), so no grouping method could show a gain at this sample size. (Absolute AUROC is not comparable with the federated runs: this offline model has no graph and no per-hospital split.)
