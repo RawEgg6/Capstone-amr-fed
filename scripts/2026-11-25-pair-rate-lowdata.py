@@ -12,6 +12,7 @@ Metric: unweighted mean over hospitals of test macro-F1 after fine-tuning (hospi
 Results: results/amr_pairrate_f<per-mille>.json (resume-safe). Runs on the Mac CPU.
 Use: headroom() first, then run(), then report().
 """
+import functools
 import importlib.util
 import json
 import os
@@ -51,6 +52,34 @@ ARMS = {
     "oracle": dict(strategy="personalized", personalized_T=BR.T_FIXED, personalized_fp="oracle",
                    personalized_group_of=region_group, finetune_epochs=FT, compute_local=False),
 }
+
+
+def _random_group(perm, raw_label) -> int:
+    return int(pr.REGION[perm[int(raw_label)]])
+
+
+def _random_perms():
+    """Three random re-shufflings of the hospitals into groups of the same sizes as the true regions, each sharing at most
+    1/3 of its same-group pairs with the true regions (so they are not the regions in disguise)."""
+    true = pr.REGION[:, None] == pr.REGION[None, :]
+    out, seed = [], 0
+    while len(out) < 3:
+        seed += 1
+        perm = np.random.default_rng(seed).permutation(pr.N_HOSP)
+        g = pr.REGION[perm]
+        same = (g[:, None] == g[None, :]) & ~np.eye(pr.N_HOSP, dtype=bool)
+        if (same & true).sum() / same.sum() <= 1 / 3:
+            out.append(perm.tolist())
+    return out
+
+
+# Iteration 2026-11-25 (after the gate failed): oracle with RANDOM groups of the same sizes. If it scores like the true-region oracle,
+# the oracle's gap to FedAvg is just "fewer hospitals in the average", not the regions carrying (or lacking) information.
+RANDOM_ARMS = {f"random_{n}": dict(strategy="personalized", personalized_T=BR.T_FIXED, personalized_fp="oracle",
+                                    personalized_group_of=functools.partial(_random_group, perm),
+                                    finetune_epochs=FT, compute_local=False)
+               for n, perm in zip("abc", _random_perms())}
+ALL_ARMS = {**ARMS, **RANDOM_ARMS}
 COMPARE = [("fedavg+ft", "local-only (40)"), ("oracle+ft", "fedavg+ft"),
            ("v3_topo+ft", "fedavg+ft"), ("v3_topo+ft", "v3_topo_shuffled+ft"),
            ("v3_ab+ft", "fedavg+ft"), ("v3_ab+ft", "v3_ab_shuffled+ft")]
@@ -77,7 +106,7 @@ def run(fracs=None, arms=None):
     os.environ.pop("AMR_RNG_PROBE", None)   # SIGFPE guard, see AGENTS.md
     df = data()
     RES.mkdir(exist_ok=True)
-    chosen = {k: ARMS[k] for k in (arms or ARMS)}
+    chosen = {k: ALL_ARMS[k] for k in (arms or ARMS)}
     for frac in (fracs or FRACS):
         p = path(frac)
         res = json.load(open(p)) if p.exists() else {}
@@ -100,7 +129,7 @@ def values(res, metric="mean"):
         fa = res["fedavg"]["runs"]
         v["local-only (40)"] = np.array([local_upto(r, 40)[metric] for r in fa])
         v["fedavg (32)"] = np.array([fed_upto(r, len(r["records"]))[metric] for r in fa])
-    for key in ARMS:
+    for key in ALL_ARMS:
         if key in res:
             v[f"{key}+ft"] = np.array([finetune_score(r)[metric] for r in res[key]["runs"]])
     return v
@@ -117,6 +146,20 @@ def headroom():
     print("GATE PASSED: the oracle beats FedAvg + fine-tune, similarity weighting has room to help." if ok else
           "GATE FAILED: even the true regions do not beat FedAvg + fine-tune. Stop; report a null result.")
     return ok
+
+
+def random_groups_test():
+    """At the gate level: oracle (true regions) vs oracle with random groups of the same sizes vs FedAvg + fine-tune."""
+    run([GATE_FRAC], arms=list(RANDOM_ARMS))
+    v = values(json.load(open(path(GATE_FRAC))))
+    rnd = np.mean([v[f"{k}+ft"] for k in RANDOM_ARMS], axis=0)
+    print(f"perms used: {_random_perms()}")
+    for k in ("local-only (40)", "fedavg+ft", "oracle+ft", *[f"{k}+ft" for k in RANDOM_ARMS]):
+        print(f"  {k:<20}{v[k].mean():.4f} +/- {v[k].std():.4f}  {np.round(v[k], 4)}")
+    print(f"  random groups, mean of 3  {rnd.mean():.4f}")
+    for name, d in (("oracle(true) - random groups", v["oracle+ft"] - rnd), ("random groups - fedavg+ft", rnd - v["fedavg+ft"]),
+                    ("oracle(true) - fedavg+ft", v["oracle+ft"] - v["fedavg+ft"])):
+        print(_fmt_stat(name, _stat(d), d))
 
 
 def report():
@@ -157,6 +200,8 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a and a[0] == "report":
         report()
+    elif a and a[0] == "random":
+        random_groups_test()
     elif a and a[0] == "headroom":
         headroom()
     else:

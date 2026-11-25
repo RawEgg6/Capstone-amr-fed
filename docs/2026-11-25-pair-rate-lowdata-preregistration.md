@@ -43,3 +43,17 @@ Arms: `fedavg`, `v3_topo`, `v3_topo_shuffled`, `v3_ab`, `v3_ab_shuffled`, `oracl
 - Five seeds, one fixed split: the intervals cover training randomness only.
 
 ## 6. Iterations (append below, dated)
+
+### 2026-11-25 — gate result and iteration 1 (diagnostic, not a rescue)
+**Gate result (3%, 5 seeds):** `oracle+ft - fedavg+ft` = -0.0027, 95% CI [-0.0058, +0.0005], p = 0.08, 0/5 seeds above zero. **Gate failed**; per section 4
+nothing else was run. Scores: local-only 0.6655, FedAvg 0.6705, FedAvg + fine-tune 0.6734, oracle + fine-tune 0.6707. FedAvg + fine-tune beat local-only by +0.0079.
+**Iteration 1 (added after seeing the gate, written while the run started, to explain the gate and not to change the verdict):** `random_a/b/c` = the oracle with
+random groups of the same sizes (4/3/3) as the true regions, each sharing at most 1/3 of its same-group pairs with them, at 3%. If these score like the true-region
+oracle, its gap to FedAvg is just "fewer hospitals in the average", not the regions carrying (or lacking) information. The verdict above stands whatever this shows.
+**Iteration 1 result (3%, 5 seeds, unweighted mean F1 after fine-tune):** local-only 0.6655, FedAvg + fine-tune 0.6734, oracle with the true regions 0.6707, oracle with random
+groups 0.6727 / 0.6739 / 0.6741 (mean 0.6735). Random groups - FedAvg + fine-tune = +0.0001 [-0.0049, +0.0051], p = 0.94. True regions - random groups = -0.0028 [-0.0106, +0.0050], p = 0.37.
+**Reading:** averaging with only 3-4 hospitals costs nothing against averaging with all 10, so "fewer hospitals in the average" does not explain the oracle's gap. The true regions score no better
+than random groups, so on this split the regions carry no useful information. Intervals are wide (about +-0.005 to 0.01 with 5 seeds), so an effect under about 0.005 is not excluded.
+**Offline check, same day (no training):** a predictor that uses each hospital's own pair resistance rate scores AUROC 0.8398 on the shifted data (0.8385 on the original), against 0.8344 for
+the all-hospital pair rate. Each hospital's graph already holds its own training-label pair rates (`graph_build.py`, near line 371), so a rate shift is visible in each model's inputs and a
+shared model has no conflict to resolve. The gate verdict stands: null on this split.
